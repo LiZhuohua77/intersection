@@ -1,7 +1,7 @@
 # Intersection Project
 
 ## Overview
-IntersectionNN is a simulation project designed to model a traffic intersection using a dynamic bicycle model for vehicle behavior. The project utilizes Pygame for rendering the environment and vehicles, and implements the Intelligent Driver Model (IDM) for longitudinal control of vehicles.
+Intersection is a simulation project designed to model a traffic intersection using a dynamic bicycle model for vehicle behavior. The project utilizes Pygame for rendering the environment and vehicles, and implements the Intelligent Driver Model (IDM) for longitudinal control of vehicles.
 
 ## Project Structure
 The project consists of the following files:

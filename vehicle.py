@@ -36,7 +36,7 @@ class Vehicle:
         self.delta = 4.0  # IDM指数
         
         # Pure Pursuit参数
-        self.lookahead_distance = 5  # 前视距离
+        self.lookahead_distance = 30  # 前视距离
         self.max_steering_angle = math.radians(30)  # 最大转向角
         
         # 车辆动力学参数
@@ -70,11 +70,11 @@ class Vehicle:
             distance = math.sqrt((point[0] - self.x)**2 + (point[1] - self.y)**2)
             
             if distance >= self.lookahead_distance:
-                print(f"车辆 {self.id}: 前视点 {point}, 距离 {distance:.2f}")
+                #print(f"车辆 {self.id}: 前视点 {point}, 距离 {distance:.2f}")
                 return point
         
         # 如果没找到足够远的点，返回最后一个点
-        print(f"车辆 {self.id}: 使用最后一个点作为前视点 {self.route_points[-1]}")
+        #print(f"车辆 {self.id}: 使用最后一个点作为前视点 {self.route_points[-1]}")
         return self.route_points[-1]
 
     def _pure_pursuit_control(self):
@@ -287,10 +287,19 @@ class Vehicle:
         # 动态自行车模型更新
         self._dynamic_bicycle_model(steering_angle, acceleration, dt)
 
-    def draw(self, surface):
-        """在surface上绘制车辆"""
+    def draw(self, surface, transform_func=None):
+        """在surface上绘制车辆
+        
+        Args:
+            surface: 要绘制的表面
+            transform_func: 坐标转换函数，接收 (x, y) 返回转换后的 (x, y)
+        """
         if self.completed:
             return
+        
+        # 如果未提供转换函数，则使用恒等映射
+        if transform_func is None:
+            transform_func = lambda x, y: (x, y)
         
         # 检查坐标是否有效，避免数值溢出
         try:
@@ -304,9 +313,12 @@ class Vehicle:
                 self.completed = True  # 标记为已完成，不再更新
                 return
                 
+            # 将世界坐标转换为屏幕坐标
+            screen_x, screen_y = transform_func(self.x, self.y)
+            
             # 创建车辆矩形
             car_rect = pygame.Rect(0, 0, self.length, self.width)
-            car_rect.center = (int(self.x), int(self.y))  # 确保是整数坐标
+            car_rect.center = (int(screen_x), int(screen_y))  # 确保是整数坐标
             
             # 余下的绘制代码
             car_surf = pygame.Surface((self.length, self.width), pygame.SRCALPHA)
@@ -314,7 +326,7 @@ class Vehicle:
             
             angle_degrees = math.degrees(self.angle)
             rotated_car = pygame.transform.rotate(car_surf, -angle_degrees)
-            rotated_rect = rotated_car.get_rect(center=(int(self.x), int(self.y)))
+            rotated_rect = rotated_car.get_rect(center=(int(screen_x), int(screen_y)))
             
             surface.blit(rotated_car, rotated_rect.topleft)
             
@@ -322,8 +334,48 @@ class Vehicle:
             speed = math.sqrt(self.vx**2 + self.vy**2)
             text = f"{self.id}:{speed:.1f}"
             id_surf = font.render(text, True, (255, 255, 255))
-            id_rect = id_surf.get_rect(center=(int(self.x), int(self.y)))
+            id_rect = id_surf.get_rect(center=(int(screen_x), int(screen_y)))
             surface.blit(id_surf, id_rect)
+            
+            # 可选：绘制前视点（用于调试）
+            lookahead_point = self._find_lookahead_point()
+            if lookahead_point:
+                lx, ly = transform_func(lookahead_point[0], lookahead_point[1])
+                pygame.draw.circle(surface, (255, 255, 0), (int(lx), int(ly)), 5)
+            
         except Exception as e:
             print(f"绘制车辆 {self.id} 时出错: {e}")
             self.completed = True  # 出错时标记为已完成
+
+    def visualize_route(self, surface, color=(255, 0, 0, 128), transform_func=None):
+        """可视化车辆的完整路径（用于调试）
+        
+        Args:
+            surface: 要绘制的表面
+            color: 路径颜色 (R,G,B,A)
+            transform_func: 坐标转换函数
+        """
+        if transform_func is None:
+            transform_func = lambda x, y: (x, y)
+            
+        if not self.route_points or len(self.route_points) < 2:
+            return
+            
+        # 创建点列表并应用转换
+        points = []
+        for point in self.route_points:
+            screen_x, screen_y = transform_func(point[0], point[1])
+            points.append((int(screen_x), int(screen_y)))
+            
+        # 绘制线段
+        if len(points) > 1:
+            # 创建临时surface支持透明度
+            temp_surface = pygame.Surface((surface.get_width(), surface.get_height()), pygame.SRCALPHA)
+            pygame.draw.lines(temp_surface, color, False, points, 2)
+            surface.blit(temp_surface, (0, 0))
+            
+        # 标记当前目标点
+        if self.current_point_index < len(self.route_points):
+            target = self.route_points[self.current_point_index]
+            tx, ty = transform_func(target[0], target[1])
+            pygame.draw.circle(surface, (0, 255, 0), (int(tx), int(ty)), 5)

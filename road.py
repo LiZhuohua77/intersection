@@ -3,7 +3,7 @@ import math
 import numpy as np
 
 class Road:
-    def __init__(self, width=400, height=400, lane_width=30):
+    def __init__(self, width=1600, height=1600, lane_width=35):
         self.width = width
         self.height = height
         self.lane_width = lane_width
@@ -17,95 +17,131 @@ class Road:
 
 
 
-    def draw_road_lines(self, surface):
-        """绘制道路标线"""
+    def draw_road_lines(self, surface, transform_func=None):
+        """绘制道路标线
+        
+        Args:
+            surface: 要绘制的表面
+            transform_func: 坐标转换函数，接收 (x, y) 返回转换后的 (x, y)
+        """
+        # 如果未提供转换函数，则使用恒等映射
+        if transform_func is None:
+            transform_func = lambda x, y: (x, y)
+            
         # 白色实线（双向分隔线）
         # 水平道路中央分隔线
-        pygame.draw.line(surface, (255, 255, 255), 
-                        (0, self.center_y), 
-                        (self.center_x - 2 * self.lane_width, self.center_y), 3)
-        pygame.draw.line(surface, (255, 255, 255), 
-                        (self.center_x + 2 * self.lane_width, self.center_y), 
-                        (self.width, self.center_y), 3)
+        start_pos = transform_func(0, self.center_y)
+        end_pos = transform_func(self.center_x - 2 * self.lane_width, self.center_y)
+        pygame.draw.line(surface, (255, 255, 255), start_pos, end_pos, 3)
+        
+        start_pos = transform_func(self.center_x + 2 * self.lane_width, self.center_y)
+        end_pos = transform_func(self.width, self.center_y)
+        pygame.draw.line(surface, (255, 255, 255), start_pos, end_pos, 3)
         
         # 垂直道路中央分隔线
-        pygame.draw.line(surface, (255, 255, 255), 
-                        (self.center_x, 0), 
-                        (self.center_x, self.center_y - 2 * self.lane_width), 3)
-        pygame.draw.line(surface, (255, 255, 255), 
-                        (self.center_x, self.center_y + 2 * self.lane_width), 
-                        (self.center_x, self.height), 3)
+        start_pos = transform_func(self.center_x, 0)
+        end_pos = transform_func(self.center_x, self.center_y - 2 * self.lane_width)
+        pygame.draw.line(surface, (255, 255, 255), start_pos, end_pos, 3)
+        
+        start_pos = transform_func(self.center_x, self.center_y + 2 * self.lane_width)
+        end_pos = transform_func(self.center_x, self.height)
+        pygame.draw.line(surface, (255, 255, 255), start_pos, end_pos, 3)
         
         # 车道边界线（带圆弧缓冲）
         corner_radius = self.lane_width   # 圆弧半径
         
         # 水平道路边界（上边界）
-        pygame.draw.line(surface, (255, 255, 255), 
-                        (0, self.center_y - self.lane_width), 
-                        (self.center_x - self.lane_width - corner_radius, self.center_y - self.lane_width), 2)
-        pygame.draw.line(surface, (255, 255, 255), 
-                        (self.center_x + self.lane_width + corner_radius, self.center_y - self.lane_width), 
-                        (self.width, self.center_y - self.lane_width), 2)
+        start_pos = transform_func(0, self.center_y - self.lane_width)
+        end_pos = transform_func(self.center_x - self.lane_width - corner_radius, self.center_y - self.lane_width)
+        pygame.draw.line(surface, (255, 255, 255), start_pos, end_pos, 2)
+        
+        start_pos = transform_func(self.center_x + self.lane_width + corner_radius, self.center_y - self.lane_width)
+        end_pos = transform_func(self.width, self.center_y - self.lane_width)
+        pygame.draw.line(surface, (255, 255, 255), start_pos, end_pos, 2)
         
         # 水平道路边界（下边界）
-        pygame.draw.line(surface, (255, 255, 255), 
-                        (0, self.center_y + self.lane_width), 
-                        (self.center_x - self.lane_width - corner_radius, self.center_y + self.lane_width), 2)
-        pygame.draw.line(surface, (255, 255, 255), 
-                        (self.center_x + self.lane_width + corner_radius, self.center_y + self.lane_width), 
-                        (self.width, self.center_y + self.lane_width), 2)
+        start_pos = transform_func(0, self.center_y + self.lane_width)
+        end_pos = transform_func(self.center_x - self.lane_width - corner_radius, self.center_y + self.lane_width)
+        pygame.draw.line(surface, (255, 255, 255), start_pos, end_pos, 2)
+        
+        start_pos = transform_func(self.center_x + self.lane_width + corner_radius, self.center_y + self.lane_width)
+        end_pos = transform_func(self.width, self.center_y + self.lane_width)
+        pygame.draw.line(surface, (255, 255, 255), start_pos, end_pos, 2)
         
         # 垂直道路边界（左边界）
-        pygame.draw.line(surface, (255, 255, 255), 
-                        (self.center_x - self.lane_width, 0), 
-                        (self.center_x - self.lane_width, self.center_y - self.lane_width - corner_radius), 2)
-        pygame.draw.line(surface, (255, 255, 255), 
-                        (self.center_x - self.lane_width, self.center_y + self.lane_width + corner_radius), 
-                        (self.center_x - self.lane_width, self.height), 2)
+        start_pos = transform_func(self.center_x - self.lane_width, 0)
+        end_pos = transform_func(self.center_x - self.lane_width, self.center_y - self.lane_width - corner_radius)
+        pygame.draw.line(surface, (255, 255, 255), start_pos, end_pos, 2)
+        
+        start_pos = transform_func(self.center_x - self.lane_width, self.center_y + self.lane_width + corner_radius)
+        end_pos = transform_func(self.center_x - self.lane_width, self.height)
+        pygame.draw.line(surface, (255, 255, 255), start_pos, end_pos, 2)
         
         # 垂直道路边界（右边界）
-        pygame.draw.line(surface, (255, 255, 255), 
-                        (self.center_x + self.lane_width, 0), 
-                        (self.center_x + self.lane_width, self.center_y - self.lane_width - corner_radius), 2)
-        pygame.draw.line(surface, (255, 255, 255), 
-                        (self.center_x + self.lane_width, self.center_y + self.lane_width + corner_radius), 
-                        (self.center_x + self.lane_width, self.height), 2)
+        start_pos = transform_func(self.center_x + self.lane_width, 0)
+        end_pos = transform_func(self.center_x + self.lane_width, self.center_y - self.lane_width - corner_radius)
+        pygame.draw.line(surface, (255, 255, 255), start_pos, end_pos, 2)
+        
+        start_pos = transform_func(self.center_x + self.lane_width, self.center_y + self.lane_width + corner_radius)
+        end_pos = transform_func(self.center_x + self.lane_width, self.height)
+        pygame.draw.line(surface, (255, 255, 255), start_pos, end_pos, 2)
         
         # 绘制圆弧缓冲
-        self.draw_corner_arcs(surface, corner_radius)
+        self.draw_corner_arcs(surface, corner_radius, transform_func)
     
-    def draw_corner_arcs(self, surface, radius):
-        """绘制道路边界的圆弧缓冲"""
+    def draw_corner_arcs(self, surface, radius, transform_func=None):
+        """绘制道路边界的圆弧缓冲
+        
+        Args:
+            surface: 要绘制的表面
+            radius: 圆弧半径
+            transform_func: 坐标转换函数
+        """
+        if transform_func is None:
+            transform_func = lambda x, y: (x, y)
+            
         # 左上角
         start_angle = 0
         end_angle = math.pi * 0.5
         center_x = self.center_x - self.lane_width - radius
         center_y = self.center_y - self.lane_width - radius
-        self.draw_arc(surface, center_x, center_y, radius, start_angle, end_angle)
+        self.draw_arc(surface, center_x, center_y, radius, start_angle, end_angle, transform_func=transform_func)
         
         # 右上角
         start_angle = math.pi * 0.5
         end_angle = math.pi
         center_x = self.center_x + self.lane_width + radius
         center_y = self.center_y - self.lane_width - radius
-        self.draw_arc(surface, center_x, center_y, radius, start_angle, end_angle)
+        self.draw_arc(surface, center_x, center_y, radius, start_angle, end_angle, transform_func=transform_func)
         
         # 右下角
         start_angle = math.pi
         end_angle = math.pi * 1.5
         center_x = self.center_x + self.lane_width + radius
         center_y = self.center_y + self.lane_width + radius
-        self.draw_arc(surface, center_x, center_y, radius, start_angle, end_angle)
+        self.draw_arc(surface, center_x, center_y, radius, start_angle, end_angle, transform_func=transform_func)
         
         # 左下角
         start_angle = math.pi * 1.5
         end_angle = math.pi * 2
         center_x = self.center_x - self.lane_width - radius
         center_y = self.center_y + self.lane_width + radius
-        self.draw_arc(surface, center_x, center_y, radius, start_angle, end_angle)
+        self.draw_arc(surface, center_x, center_y, radius, start_angle, end_angle, transform_func=transform_func)
     
-    def draw_arc(self, surface, center_x, center_y, radius, start_angle, end_angle, color=(255, 255, 255)):
-        """绘制边界圆弧"""
+    def draw_arc(self, surface, center_x, center_y, radius, start_angle, end_angle, color=(255, 255, 255), transform_func=None):
+        """绘制边界圆弧
+        
+        Args:
+            surface: 要绘制的表面
+            center_x, center_y: 圆心坐标
+            radius: 半径
+            start_angle, end_angle: 起始和结束角度
+            color: 颜色
+            transform_func: 坐标转换函数
+        """
+        if transform_func is None:
+            transform_func = lambda x, y: (x, y)
+            
         # 创建临时surface (如果需要透明)
         temp_surface = None
         if len(color) > 3:  # 颜色包含alpha通道
@@ -134,6 +170,8 @@ class Road:
             angle = start_angle + step * i
             x = center_x + radius * math.cos(angle)
             y = center_y + radius * math.sin(angle)
+            # 应用坐标转换
+            x, y = transform_func(x, y)
             points.append((int(x), int(y)))
         
         if len(points) > 1:
@@ -143,8 +181,17 @@ class Road:
         if temp_surface:
             surface.blit(temp_surface, (0, 0))
     
-    def draw_center_lines(self, surface, alpha=128):  # 添加alpha参数，默认半透明
-        """绘制车道中线（包含转弯圆弧）"""
+    def draw_center_lines(self, surface, alpha=128, transform_func=None):  # 添加transform_func参数
+        """绘制车道中线（包含转弯圆弧）
+        
+        Args:
+            surface: 要绘制的表面
+            alpha: 透明度
+            transform_func: 坐标转换函数
+        """
+        if transform_func is None:
+            transform_func = lambda x, y: (x, y)
+            
         # 创建透明临时surface
         temp_surface = pygame.Surface((surface.get_width(), surface.get_height()), pygame.SRCALPHA)
         
@@ -155,72 +202,85 @@ class Road:
         # 直行车道中线
         # 水平道路中线（向右行驶）
         # 入口道
-        pygame.draw.line(temp_surface, yellow, 
-                        (0, self.center_y + self.lane_width//2), 
-                        (self.center_x - 2 * self.lane_width, self.center_y + self.lane_width//2), 2)
+        start_pos = transform_func(0, self.center_y + self.lane_width//2)
+        end_pos = transform_func(self.center_x - 2 * self.lane_width, self.center_y + self.lane_width//2)
+        pygame.draw.line(temp_surface, yellow, start_pos, end_pos, 2)
+        
         # 出口道
-        pygame.draw.line(temp_surface, yellow, 
-                        (self.center_x + 2 * self.lane_width, self.center_y + self.lane_width//2), 
-                        (self.width, self.center_y + self.lane_width//2), 2)
+        start_pos = transform_func(self.center_x + 2 * self.lane_width, self.center_y + self.lane_width//2)
+        end_pos = transform_func(self.width, self.center_y + self.lane_width//2)
+        pygame.draw.line(temp_surface, yellow, start_pos, end_pos, 2)
+        
         # 直行
-        pygame.draw.line(temp_surface, yellow,
-                        (self.center_x - 2 * self.lane_width, self.center_y + self.lane_width//2), 
-                        (self.center_x + 2 * self.lane_width, self.center_y + self.lane_width//2), 2)
+        start_pos = transform_func(self.center_x - 2 * self.lane_width, self.center_y + self.lane_width//2)
+        end_pos = transform_func(self.center_x + 2 * self.lane_width, self.center_y + self.lane_width//2)
+        pygame.draw.line(temp_surface, yellow, start_pos, end_pos, 2)
         
         # 水平道路中线（向左行驶）
         # 入口道
-        pygame.draw.line(temp_surface, yellow, 
-                        (self.center_x + 2 * self.lane_width, self.center_y - self.lane_width//2), 
-                        (self.width, self.center_y - self.lane_width//2), 2)
+        start_pos = transform_func(self.center_x + 2 * self.lane_width, self.center_y - self.lane_width//2)
+        end_pos = transform_func(self.width, self.center_y - self.lane_width//2)
+        pygame.draw.line(temp_surface, yellow, start_pos, end_pos, 2)
 
         # 出口道
-        pygame.draw.line(temp_surface, yellow, 
-                        (0, self.center_y - self.lane_width//2), 
-                        (self.center_x - 2 * self.lane_width, self.center_y - self.lane_width//2), 2)
+        start_pos = transform_func(0, self.center_y - self.lane_width//2)
+        end_pos = transform_func(self.center_x - 2 * self.lane_width, self.center_y - self.lane_width//2)
+        pygame.draw.line(temp_surface, yellow, start_pos, end_pos, 2)
         
         # 直行
-        pygame.draw.line(temp_surface, yellow,
-                        (self.center_x - 2 * self.lane_width, self.center_y - self.lane_width//2), 
-                        (self.center_x + 2 * self.lane_width, self.center_y - self.lane_width//2), 2)
+        start_pos = transform_func(self.center_x - 2 * self.lane_width, self.center_y - self.lane_width//2)
+        end_pos = transform_func(self.center_x + 2 * self.lane_width, self.center_y - self.lane_width//2)
+        pygame.draw.line(temp_surface, yellow, start_pos, end_pos, 2)
         
         # 垂直道路中线（向下行驶）
         # 入口道
-        pygame.draw.line(temp_surface, yellow, 
-                        (self.center_x - self.lane_width//2, 0), 
-                        (self.center_x - self.lane_width//2, self.center_y - 2 * self.lane_width), 2)
+        start_pos = transform_func(self.center_x - self.lane_width//2, 0)
+        end_pos = transform_func(self.center_x - self.lane_width//2, self.center_y - 2 * self.lane_width)
+        pygame.draw.line(temp_surface, yellow, start_pos, end_pos, 2)
+        
         # 出口道
-        pygame.draw.line(temp_surface, yellow, 
-                        (self.center_x - self.lane_width//2, self.center_y + 2 * self.lane_width), 
-                        (self.center_x - self.lane_width//2, self.height), 2)
+        start_pos = transform_func(self.center_x - self.lane_width//2, self.center_y + 2 * self.lane_width)
+        end_pos = transform_func(self.center_x - self.lane_width//2, self.height)
+        pygame.draw.line(temp_surface, yellow, start_pos, end_pos, 2)
+        
         # 直行
-        pygame.draw.line(temp_surface, yellow,
-                        (self.center_x - self.lane_width//2, self.center_y - 2 * self.lane_width), 
-                        (self.center_x - self.lane_width//2, self.center_y + 2 * self.lane_width), 2)
+        start_pos = transform_func(self.center_x - self.lane_width//2, self.center_y - 2 * self.lane_width)
+        end_pos = transform_func(self.center_x - self.lane_width//2, self.center_y + 2 * self.lane_width)
+        pygame.draw.line(temp_surface, yellow, start_pos, end_pos, 2)
         
         # 垂直道路中线（向上行驶）
         # 入口道
-        pygame.draw.line(temp_surface, yellow, 
-                        (self.center_x + self.lane_width//2, self.center_y + 2 * self.lane_width), 
-                        (self.center_x + self.lane_width//2, self.height), 2)
+        start_pos = transform_func(self.center_x + self.lane_width//2, self.center_y + 2 * self.lane_width)
+        end_pos = transform_func(self.center_x + self.lane_width//2, self.height)
+        pygame.draw.line(temp_surface, yellow, start_pos, end_pos, 2)
 
         # 出口道
-        pygame.draw.line(temp_surface, yellow, 
-                        (self.center_x + self.lane_width//2, 0), 
-                        (self.center_x + self.lane_width//2, self.center_y - 2 * self.lane_width), 2)
+        start_pos = transform_func(self.center_x + self.lane_width//2, 0)
+        end_pos = transform_func(self.center_x + self.lane_width//2, self.center_y - 2 * self.lane_width)
+        pygame.draw.line(temp_surface, yellow, start_pos, end_pos, 2)
         
         # 直行
-        pygame.draw.line(temp_surface, yellow,
-                        (self.center_x + self.lane_width//2, self.center_y - 2 * self.lane_width), 
-                        (self.center_x + self.lane_width//2, self.center_y + 2 * self.lane_width), 2)
+        start_pos = transform_func(self.center_x + self.lane_width//2, self.center_y - 2 * self.lane_width)
+        end_pos = transform_func(self.center_x + self.lane_width//2, self.center_y + 2 * self.lane_width)
+        pygame.draw.line(temp_surface, yellow, start_pos, end_pos, 2)
         
         # 将临时surface绘制到主surface
         surface.blit(temp_surface, (0, 0))
         
         # 绘制转弯圆弧
-        self.draw_turn_arcs(surface, alpha)
+        self.draw_turn_arcs(surface, alpha, transform_func)
 
-    def draw_turn_arcs(self, surface, alpha=128):
-        """绘制转弯圆弧连接线（使用圆心和角度定义方式）"""
+    def draw_turn_arcs(self, surface, alpha=128, transform_func=None):
+        """绘制转弯圆弧连接线（使用圆心和角度定义方式）
+        
+        Args:
+            surface: 要绘制的表面
+            alpha: 透明度
+            transform_func: 坐标转换函数
+        """
+        if transform_func is None:
+            transform_func = lambda x, y: (x, y)
+            
         yellow = (255, 255, 0, alpha)
         red = (255, 0, 0, alpha)
         
@@ -228,50 +288,49 @@ class Road:
         center_x = self.center_x + self.lane_width + self.lane_width
         center_y = self.center_y + self.lane_width + self.lane_width
         self.draw_arc(surface, center_x, center_y, self.right_turn_radius, 
-                            math.pi, math.pi * 1.5, yellow)
+                      math.pi, math.pi * 1.5, yellow, transform_func)
         
         # 从南向西（左转）
         center_x = self.center_x + self.lane_width//2 - self.left_turn_radius 
         center_y = self.center_y - self.lane_width//2 + self.left_turn_radius 
         self.draw_arc(surface, center_x, center_y, self.left_turn_radius, 
-                            0, -math.pi * 0.5, yellow)
+                      0, -math.pi * 0.5, yellow, transform_func)
         
         # 从北向西（右转）
         center_x = self.center_x - self.lane_width - self.lane_width
         center_y = self.center_y - self.lane_width - self.lane_width
         self.draw_arc(surface, center_x, center_y, self.right_turn_radius, 
-                            0, math.pi * 0.5, yellow)
+                      0, math.pi * 0.5, yellow, transform_func)
         
         # 从北向东（左转）
         center_x = self.center_x - self.lane_width//2 + self.left_turn_radius
         center_y = self.center_y + self.lane_width//2 - self.left_turn_radius 
         self.draw_arc(surface, center_x, center_y, self.left_turn_radius, 
-                            math.pi * 0.5, math.pi, yellow)
+                      math.pi * 0.5, math.pi, yellow, transform_func)
         
         # 从东向北（右转）
         center_x = self.center_x - self.lane_width//2 + self.left_turn_radius
         center_y = self.center_y + self.lane_width//2 - self.left_turn_radius
         self.draw_arc(surface, center_x, center_y, self.right_turn_radius, 
-                            math.pi * 0.5, math.pi, yellow)
+                      math.pi * 0.5, math.pi, yellow, transform_func)
         
         # 从东向南（左转）
         center_x = self.center_x + self.lane_width + self.lane_width
         center_y = self.center_y + self.lane_width + self.lane_width
         self.draw_arc(surface, center_x, center_y, self.left_turn_radius, 
-                            math.pi, math.pi * 1.5, yellow)
+                      math.pi, math.pi * 1.5, yellow, transform_func)
         
         # 从西向南（右转）
         center_x = self.center_x - self.lane_width - self.lane_width
         center_y = self.center_y + self.lane_width + self.lane_width
         self.draw_arc(surface, center_x, center_y, self.right_turn_radius, 
-                            math.pi * 1.5, math.pi * 2, yellow)
+                      math.pi * 1.5, math.pi * 2, yellow, transform_func)
         
         # 从西向北（左转）
         center_x = self.center_x - self.lane_width - self.lane_width
         center_y = self.center_y - self.lane_width - self.lane_width
         self.draw_arc(surface, center_x, center_y, self.left_turn_radius, 
-                            0, math.pi * 0.5, yellow)
-
+                      0, math.pi * 0.5, yellow, transform_func)
 
     def generate_centerline_points(self, segment_length=5):
         """生成中心线的点序列，用于车辆追踪
@@ -607,7 +666,7 @@ class Road:
         
         return filtered_points
 
-    def visualize_centerline_points(self, surface, point_radius=2, show_all=True, route_key=None):
+    def visualize_centerline_points(self, surface, point_radius=2, show_all=True, route_key=None, transform_func=None):
         """可视化中心线点序列
         
         Args:
@@ -615,7 +674,11 @@ class Road:
             point_radius: 点的半径
             show_all: 是否显示所有路径的点
             route_key: 如果指定，只显示特定路径的点
+            transform_func: 坐标转换函数
         """
+        if transform_func is None:
+            transform_func = lambda x, y: (x, y)
+            
         points_dict = self.generate_centerline_points()
         
         # 定义颜色
@@ -640,14 +703,18 @@ class Road:
                 color = colors.get(key, (255, 255, 255))
                 for i, point in enumerate(points):
                     if i % 3 == 0:  # 稀疏显示点，避免太密集
-                        pygame.draw.circle(surface, color, point, point_radius)
+                        # 应用坐标转换
+                        screen_x, screen_y = transform_func(point[0], point[1])
+                        pygame.draw.circle(surface, color, (screen_x, screen_y), point_radius)
         elif route_key and route_key in points_dict:
             # 只显示指定路径的点
             color = colors.get(route_key, (255, 255, 255))
             for point in points_dict[route_key]:
-                pygame.draw.circle(surface, color, point, point_radius)
+                # 应用坐标转换
+                screen_x, screen_y = transform_func(point[0], point[1])
+                pygame.draw.circle(surface, color, (screen_x, screen_y), point_radius)
 
-    def visualize_route_points(self, surface, start_direction, end_direction, point_radius=1, color=(255, 0, 0)):
+    def visualize_route_points(self, surface, start_direction, end_direction, point_radius=1, color=(255, 0, 0), transform_func=None):
         """可视化特定路径的点序列
         
         Args:
@@ -656,7 +723,11 @@ class Road:
             end_direction: 结束方向
             point_radius: 点的半径
             color: 点的颜色
+            transform_func: 坐标转换函数
         """
+        if transform_func is None:
+            transform_func = lambda x, y: (x, y)
+            
         route_points = self.get_route_points(start_direction, end_direction)
         
         for i, point in enumerate(route_points):
@@ -664,8 +735,11 @@ class Road:
             alpha = min(255, 100 + i * 2)
             current_color = (*color, alpha) if len(color) == 3 else color
             
+            # 应用坐标转换
+            screen_x, screen_y = transform_func(point[0], point[1])
+            
             # 创建临时surface来支持alpha混合
             temp_surface = pygame.Surface((point_radius * 2, point_radius * 2), pygame.SRCALPHA)
             pygame.draw.circle(temp_surface, current_color, (point_radius, point_radius), point_radius)
-            surface.blit(temp_surface, (point[0] - point_radius, point[1] - point_radius))
+            surface.blit(temp_surface, (screen_x - point_radius, screen_y - point_radius))
 
