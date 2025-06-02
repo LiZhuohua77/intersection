@@ -1,0 +1,4 @@
+pygame
+numpy
+matplotlib  # Optional, for plotting if needed
+```
