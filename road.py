@@ -3,7 +3,7 @@ import math
 import numpy as np
 
 class Road:
-    def __init__(self, width=1600, height=1600, lane_width=35):
+    def __init__(self, width=2000, height=2000, lane_width=35):
         self.width = width
         self.height = height
         self.lane_width = lane_width
@@ -332,7 +332,7 @@ class Road:
         self.draw_arc(surface, center_x, center_y, self.left_turn_radius, 
                       0, math.pi * 0.5, yellow, transform_func)
 
-    def generate_centerline_points(self, segment_length=5):
+    def generate_centerline_points(self, segment_length=5, straight_segment_length=None):
         """生成中心线的点序列，用于车辆追踪
         
         Args:
@@ -341,6 +341,11 @@ class Road:
         Returns:
             dict: 包含各个方向和转弯的点序列
         """
+
+        # 直线路段使用更大的间距
+        if straight_segment_length is None:
+            straight_segment_length = segment_length * 7  # 直线间距是转弯间距的4倍
+
         points = {
             'horizontal_right': [],  # 水平向右行驶
             'horizontal_left': [],   # 水平向左行驶
@@ -359,26 +364,26 @@ class Road:
         # 生成直行道路中心线点
         # 水平向右行驶中心线
         y = self.center_y + self.lane_width // 2
-        for x in range(0, self.width, segment_length):
+        for x in range(0, self.width, straight_segment_length):
             points['horizontal_right'].append((x, y))
         
         # 水平向左行驶中心线
         y = self.center_y - self.lane_width // 2
-        for x in range(self.width, 0, -segment_length):
+        for x in range(self.width, 0, -straight_segment_length):
             points['horizontal_left'].append((x, y))
         
         # 垂直向下行驶中心线
         x = self.center_x - self.lane_width // 2
-        for y in range(0, self.height, segment_length):
+        for y in range(0, self.height, straight_segment_length):
             points['vertical_down'].append((x, y))
         
         # 垂直向上行驶中心线
         x = self.center_x + self.lane_width // 2
-        for y in range(self.height, 0, -segment_length):
+        for y in range(self.height, 0, -straight_segment_length):
             points['vertical_up'].append((x, y))
         
         # 生成转弯圆弧中心线点
-        num_arc_points = 20
+        num_arc_points = 19
         
         # 南向东右转 (包含进口道、转弯圆弧、出口道)
         route_points = []
@@ -386,7 +391,7 @@ class Road:
         start_y = self.height
         end_y = self.center_y + 2 * self.lane_width
         x = self.center_x + self.lane_width // 2
-        for y in range(start_y, end_y, -segment_length):
+        for y in range(start_y, end_y, -straight_segment_length):
             route_points.append((x, y))
         
         # 转弯圆弧
@@ -402,7 +407,7 @@ class Road:
         start_x = self.center_x + 2 * self.lane_width
         end_x = self.width
         y = self.center_y + self.lane_width // 2
-        for x in range(start_x, end_x, segment_length):
+        for x in range(start_x, end_x, straight_segment_length):
             route_points.append((x, y))
         points['turn_south_to_east'] = route_points
         
@@ -412,7 +417,7 @@ class Road:
         start_y = self.height
         end_y = self.center_y + 2 * self.lane_width
         x = self.center_x + self.lane_width // 2
-        for y in range(start_y, end_y, -segment_length):
+        for y in range(start_y, end_y, -straight_segment_length):
             route_points.append((x, y))
         
         # 转弯圆弧
@@ -428,7 +433,7 @@ class Road:
         start_x = self.center_x - 2 * self.lane_width
         end_x = 0
         y = self.center_y - self.lane_width // 2
-        for x in range(start_x, end_x, -segment_length):
+        for x in range(start_x, end_x, -straight_segment_length):
             route_points.append((x, y))
         points['turn_south_to_west'] = route_points
         
@@ -438,7 +443,7 @@ class Road:
         start_y = 0
         end_y = self.center_y - 2 * self.lane_width
         x = self.center_x - self.lane_width // 2
-        for y in range(start_y, end_y, segment_length):
+        for y in range(start_y, end_y, straight_segment_length):
             route_points.append((x, y))
         
         # 转弯圆弧
@@ -454,7 +459,7 @@ class Road:
         start_x = self.center_x - 2 * self.lane_width
         end_x = 0
         y = self.center_y - self.lane_width // 2
-        for x in range(start_x, end_x, -segment_length):
+        for x in range(start_x, end_x, -straight_segment_length):
             route_points.append((x, y))
         points['turn_north_to_west'] = route_points
         
@@ -464,7 +469,7 @@ class Road:
         start_y = 0
         end_y = self.center_y - 2 * self.lane_width
         x = self.center_x - self.lane_width // 2
-        for y in range(start_y, end_y, segment_length):
+        for y in range(start_y, end_y, straight_segment_length):
             route_points.append((x, y))
         
         # 转弯圆弧
@@ -480,7 +485,7 @@ class Road:
         start_x = self.center_x + 2 * self.lane_width
         end_x = self.width
         y = self.center_y + self.lane_width // 2
-        for x in range(start_x, end_x, segment_length):
+        for x in range(start_x, end_x, straight_segment_length):
             route_points.append((x, y))
         points['turn_north_to_east'] = route_points
         
@@ -490,7 +495,7 @@ class Road:
         start_x = self.width
         end_x = self.center_x + 2 * self.lane_width
         y = self.center_y - self.lane_width // 2
-        for x in range(start_x, end_x, -segment_length):
+        for x in range(start_x, end_x, -straight_segment_length):
             route_points.append((x, y))
         
         # 转弯圆弧
@@ -506,7 +511,7 @@ class Road:
         start_y = self.center_y - 2 * self.lane_width
         end_y = 0
         x = self.center_x + self.lane_width // 2
-        for y in range(start_y, end_y, -segment_length):
+        for y in range(start_y, end_y, -straight_segment_length):
             route_points.append((x, y))
         points['turn_east_to_north'] = route_points
         
@@ -516,7 +521,7 @@ class Road:
         start_x = self.width
         end_x = self.center_x + 2 * self.lane_width
         y = self.center_y - self.lane_width // 2
-        for x in range(start_x, end_x, -segment_length):
+        for x in range(start_x, end_x, -straight_segment_length):
             route_points.append((x, y))
         
         # 转弯圆弧
@@ -532,7 +537,7 @@ class Road:
         start_y = self.center_y + 2 * self.lane_width
         end_y = self.height
         x = self.center_x - self.lane_width // 2
-        for y in range(start_y, end_y, segment_length):
+        for y in range(start_y, end_y, straight_segment_length):
             route_points.append((x, y))
         points['turn_east_to_south'] = route_points
         
@@ -542,7 +547,7 @@ class Road:
         start_x = 0
         end_x = self.center_x - 2 * self.lane_width
         y = self.center_y + self.lane_width // 2
-        for x in range(start_x, end_x, segment_length):
+        for x in range(start_x, end_x, straight_segment_length):
             route_points.append((x, y))
         
         # 转弯圆弧
@@ -558,7 +563,7 @@ class Road:
         start_y = self.center_y + 2 * self.lane_width
         end_y = self.height
         x = self.center_x - self.lane_width // 2
-        for y in range(start_y, end_y, segment_length):
+        for y in range(start_y, end_y, straight_segment_length):
             route_points.append((x, y))
         points['turn_west_to_south'] = route_points
         
@@ -568,7 +573,7 @@ class Road:
         start_x = 0
         end_x = self.center_x - 2 * self.lane_width
         y = self.center_y + self.lane_width // 2
-        for x in range(start_x, end_x, segment_length):
+        for x in range(start_x, end_x, straight_segment_length):
             route_points.append((x, y))
         
         # 转弯圆弧
@@ -584,24 +589,26 @@ class Road:
         start_y = self.center_y - 2 * self.lane_width
         end_y = 0
         x = self.center_x + self.lane_width // 2
-        for y in range(start_y, end_y, -segment_length):
+        for y in range(start_y, end_y, -straight_segment_length):
             route_points.append((x, y))
         points['turn_west_to_north'] = route_points
         
         return points
 
-    def get_route_points(self, start_direction, end_direction, segment_length=5):
+    def get_route_points(self, start_direction, end_direction, segment_length=5, straight_segment_length=None):
         """获取从起始方向到结束方向的完整路径点序列
         
         Args:
             start_direction: 起始方向 ('north', 'south', 'east', 'west')
             end_direction: 结束方向 ('north', 'south', 'east', 'west')
-            segment_length: 每段的长度（像素）
+            segment_length: 转弯时每段的长度（像素）
+            straight_segment_length: 直线时每段的长度（像素），如果为None则使用segment_length的4倍
             
         Returns:
             list: 完整路径的点序列
         """
-        centerlines = self.generate_centerline_points(segment_length)
+        # 使用变密度生成路径点
+        centerlines = self.generate_centerline_points(segment_length, straight_segment_length)
         route_points = []
         
         # 定义路径映射
@@ -636,9 +643,12 @@ class Road:
                 route_points = centerlines['turn_west_to_south']
             elif end_direction == 'north':  # 左转
                 route_points = centerlines['turn_west_to_north']
+
         
         # Remove duplicate consecutive points
-        return self._remove_duplicate_points(route_points)
+        filtered_points = self._remove_duplicate_points(route_points)
+        
+        return filtered_points
 
     def _remove_duplicate_points(self, points, tolerance=1):
         """Remove consecutive duplicate points from a list of points

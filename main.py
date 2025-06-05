@@ -17,11 +17,13 @@ road = Road()
 # 创建车辆
 vehicles = [
     Vehicle(road, 'west', 'north', 1),  # 南到北直行
+    #Vehicle(road, 'west', 'north', 2),  # 北到东直行
 ]
 
 # 游戏循环
 clock = pygame.time.Clock()
 running = True
+paused = False  # 添加暂停状态
 
 # 视图变换参数
 zoom = 1.0
@@ -67,6 +69,28 @@ while running:
         elif event.type == pygame.VIDEORESIZE:
             # 处理窗口大小变化
             width, height = event.size
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_SPACE:  # 按空格键暂停/恢复
+                paused = not paused
+                print(f"仿真 {'暂停' if paused else '继续'}")
+            elif event.key == pygame.K_p:  # 按P键也可以暂停/恢复
+                paused = not paused
+                print(f"仿真 {'暂停' if paused else '继续'}")
+            elif event.key == pygame.K_b:  # 按B键切换自行车模型可视化
+                for vehicle in vehicles:
+                    vehicle.toggle_bicycle_visualization()
+            elif event.key == pygame.K_d:  # 按D键切换调试信息
+                for vehicle in vehicles:
+                    vehicle.toggle_debug_info()
+            elif event.key == pygame.K_r:  # 按R键重置仿真
+                # 重新创建车辆
+                vehicles.clear()
+                vehicles.extend([
+
+                    Vehicle(road, 'west', 'north', 1),
+                    #Vehicle(road, 'west', 'north', 2),
+                ])
+                print("仿真已重置")
     
     # 清屏（深灰色背景，模拟沥青路面）
     screen.fill((50, 50, 50))
@@ -80,20 +104,50 @@ while running:
     road.draw_center_lines(temp_surface, transform_func=world_to_screen)
     road.visualize_route_points(temp_surface, 'west', 'north', point_radius=4, transform_func=world_to_screen)
     
-    # 更新并绘制车辆到临时Surface
+    # 只有在非暂停状态下才更新车辆位置
+    if not paused:
+        for vehicle in vehicles:
+            vehicle.update(0.1)  # 传入较小的时间步长使移动更平滑
+    
+    # 绘制车辆（无论是否暂停都要绘制）
     for vehicle in vehicles:
-        vehicle.update(0.1)  # 传入较小的时间步长使移动更平滑
-        vehicle.draw(temp_surface, transform_func=world_to_screen)
+        vehicle.draw(temp_surface, transform_func=world_to_screen, scale=zoom)
     
     # 将临时Surface绘制到屏幕
     screen.blit(temp_surface, (0, 0))
     
-    # 显示当前缩放比例和位置信息
-    """ font = pygame.font.SysFont(None, 24)
-    zoom_text = font.render(f"Zoom: {zoom:.2f}x", True, (255, 255, 255))
-    pos_text = font.render(f"Position: ({camera_x:.0f}, {camera_y:.0f})", True, (255, 255, 255))
-    screen.blit(zoom_text, (10, 10))
-    screen.blit(pos_text, (10, 40)) """
+    # 显示暂停状态和控制提示
+    font = pygame.font.SysFont(None, 24)
+    
+    # 暂停状态指示
+    if paused:
+        pause_text = font.render("PAUSED", True, (255, 255, 0))
+        pause_rect = pause_text.get_rect(center=(width//2, 30))
+        # Draw semi-transparent background
+        pause_bg = pygame.Surface((pause_rect.width + 20, pause_rect.height + 10), pygame.SRCALPHA)
+        pause_bg.fill((0, 0, 0, 128))
+        screen.blit(pause_bg, (pause_rect.x - 10, pause_rect.y - 5))
+        screen.blit(pause_text, pause_rect)
+    
+    # Control hints
+    controls = [
+        "Space/P: Pause/Resume",
+        "B: Toggle Bicycle Model",
+        "D: Toggle Debug Info", 
+        "R: Reset Simulation",
+        "Mouse Drag: Move View",
+        "Mouse Wheel: Zoom"
+    ]
+    
+    small_font = pygame.font.SysFont(None, 18)
+    for i, control in enumerate(controls):
+        text = small_font.render(control, True, (200, 200, 200))
+        screen.blit(text, (10, height - 120 + i * 20))
+    
+    # Display current zoom ratio and position info (optional)
+    info_text = small_font.render(f"Zoom: {zoom:.2f}x  Position: ({camera_x:.0f}, {camera_y:.0f})", 
+                                  True, (150, 150, 150))
+    screen.blit(info_text, (10, 10))
 
     # 更新显示
     pygame.display.flip()
