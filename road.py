@@ -3,7 +3,7 @@ import math
 import numpy as np
 
 class Road:
-    def __init__(self, width=2000, height=2000, lane_width=35):
+    def __init__(self, width=200, height=200, lane_width=4):
         self.width = width
         self.height = height
         self.lane_width = lane_width
