@@ -130,42 +130,43 @@ class TrafficManager:
     
     def spawn_vehicle(self, start_direction):
         """在指定方向生成车辆"""
+        # can_spawn_vehicle 逻辑保持不变...
         if not self.can_spawn_vehicle(start_direction):
             return None
         
-        # 选择目标方向
         end_direction = self.get_random_destination(start_direction)
-        
-        # 选择车辆类型
         vehicle_type, type_config = self.get_random_vehicle_type()
         
-        # 创建车辆
-        vehicle = Vehicle(self.road, start_direction, end_direction, self.vehicle_id_counter)
-        vehicle.speed = type_config['speed'] + random.uniform(-2, 2)  # 添加速度随机性
-        vehicle.color = type_config['color']
-        vehicle.vehicle_type = vehicle_type
-        
-        self.vehicles.append(vehicle)
-        self.vehicle_id_counter += 1
-        self.last_spawn_time[start_direction] = time.time()
-        
-        print(f"生成车辆 #{vehicle.vehicle_id}: {vehicle_type} 从 {start_direction} 到 {end_direction}")
-        return vehicle
+        try:
+            # 【核心改动 1】使用新的Vehicle构造函数
+            vehicle = Vehicle(self.road, start_direction, end_direction, self.vehicle_id_counter)
+            # 你可以根据类型设置一些属性，例如颜色
+            vehicle.color = type_config['color']
+            # vehicle.vehicle_type = vehicle_type # 如果需要，可以添加这个属性
+            
+            self.vehicles.append(vehicle)
+            self.vehicle_id_counter += 1
+            self.last_spawn_time[start_direction] = time.time()
+            
+            print(f"生成车辆 #{vehicle.vehicle_id}: {vehicle_type} 从 {start_direction} 到 {end_direction}")
+            return vehicle
+        except ValueError as e:
+            print(f"无法生成车辆: {e}")
+            return None
     
     def update(self, dt):
         """更新交通管理器"""
-        # 尝试在各个方向生成车辆
+        # 生成车辆的逻辑保持不变...
         directions = ['north', 'south', 'east', 'west']
-        
         for direction in directions:
-            if random.random() < 0.3:  # 30%概率尝试生成
+            if random.random() < 0.1: # 降低生成频率以观察单个车辆
                 self.spawn_vehicle(direction)
         
-        # 更新所有车辆（传递车辆列表用于IDM计算）
-        for vehicle in self.vehicles[:]:  # 使用切片避免修改列表时的问题
+        # 【核心改动 2】更新所有车辆的调用方式
+        for vehicle in self.vehicles[:]:
+            # 现在，车辆自己处理所有逻辑，我们只需要传递dt和所有车辆列表用于感知
             vehicle.update(dt, all_vehicles=self.vehicles)
             
-            # 移除已完成的车辆
             if vehicle.completed:
                 print(f"车辆 #{vehicle.vehicle_id} 已完成路径")
                 self.vehicles.remove(vehicle)
@@ -190,9 +191,7 @@ class TrafficManager:
                 if hasattr(vehicle, 'vehicle_type') and vehicle.vehicle_type in stats['by_type']:
                     stats['by_type'][vehicle.vehicle_type] += 1
                 
-                total_speed += vehicle.speed
-            
-            stats['average_speed'] = total_speed / len(self.vehicles)
+
         
         return stats
     

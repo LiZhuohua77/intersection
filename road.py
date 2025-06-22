@@ -14,9 +14,6 @@ class Road:
         self.left_turn_radius = lane_width * 2.5  # 左转半径较大
         self.right_turn_radius = lane_width * 1.5  # 右转半径较小
 
-
-
-
     def draw_road_lines(self, surface, transform_func=None):
         """绘制道路标线
         
@@ -605,7 +602,7 @@ class Road:
             straight_segment_length: 直线时每段的长度（像素），如果为None则使用segment_length的4倍
             
         Returns:
-            list: 完整路径的点序列
+            list: 完整路径的点序列，每个元素为 (x, y, angle) 元组，angle为弧度制朝向角度
         """
         # 使用变密度生成路径点
         centerlines = self.generate_centerline_points(segment_length, straight_segment_length)
@@ -648,7 +645,24 @@ class Road:
         # Remove duplicate consecutive points
         filtered_points = self._remove_duplicate_points(route_points)
         
-        return filtered_points
+        # 计算每个点的朝向角度
+        points_with_angle = []
+        for i, point in enumerate(filtered_points):
+            if i == len(filtered_points) - 1:
+                # 最后一个点，使用前一个点的角度
+                if i > 0:
+                    angle = points_with_angle[-1][2]
+                else:
+                    angle = 0
+            else:
+                # 计算当前点到下一个点的方向角度
+                dx = filtered_points[i + 1][0] - point[0]
+                dy = filtered_points[i + 1][1] - point[1]
+                angle = math.atan2(dy, dx)
+            
+            points_with_angle.append((point[0], point[1], angle))
+        
+        return points_with_angle
 
     def _remove_duplicate_points(self, points, tolerance=1):
         """Remove consecutive duplicate points from a list of points
