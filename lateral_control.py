@@ -11,6 +11,7 @@ class MPCController:
     def __init__(self):
         # 加载参数
         self.N = MPC_HORIZON
+        self.N_c = MPC_CONTROL_HORIZON
         self.Q = np.diag(MPC_Q)  # 状态误差权重矩阵 [y, psi]
         self.R = np.diag(MPC_R)  # 控制输入权重矩阵 [delta]
         self.Rd = np.diag(MPC_RD) # 控制输入变化率权重矩阵 [delta_dot]
@@ -67,7 +68,7 @@ class MPCController:
         
         # 优化变量：状态序列和控制序列
         self.X = self.opti.variable(4, self.N + 1) # 状态 [y_e, psi_e, vy, psi_dot]
-        self.U = self.opti.variable(1, self.N)     # 控制 [delta]
+        self.U = self.opti.variable(1, self.N_c)     # 控制 [delta]
         
         # 参数：初始状态、参考轨迹、上一次控制
         self.x0 = self.opti.parameter(4, 1)
@@ -85,15 +86,14 @@ class MPCController:
             state_error = self.X[:2, k] - self.X_ref[:, k]
             cost += ca.mtimes([state_error.T, self.Q, state_error])
             
-            # 控制量代价
-            cost += ca.mtimes([self.U[:, k].T, self.R, self.U[:, k]])
-            
-            # 控制量变化率代价
-            if k == 0:
-                control_diff = self.U[:, k] - self.u_last
-            else:
-                control_diff = self.U[:, k] - self.U[:, k-1]
-            cost += ca.mtimes([control_diff.T, self.Rd, control_diff])
+            # 控制量和变化率代价，仅在控制时域内
+            if k < self.N_c:
+                cost += ca.mtimes([self.U[:, k].T, self.R, self.U[:, k]])
+                if k == 0:
+                    control_diff = self.U[:, k] - self.u_last
+                else:
+                    control_diff = self.U[:, k] - self.U[:, k-1]
+                cost += ca.mtimes([control_diff.T, self.Rd, control_diff])
 
         # 最终状态的代价
         final_state_error = self.X[:2, self.N] - self.X_ref[:, self.N]
@@ -105,9 +105,14 @@ class MPCController:
         for k in range(self.N):
             A_k = self.A_series[:, k*4:(k+1)*4]
             B_k = self.B_series[:, k*1:(k+1)*1]
-            self.opti.subject_to(self.X[:, k+1] == A_k @ self.X[:, k] + B_k @ self.U[:, k])
+            if k < self.N_c:
+                # 在控制时域内，使用优化变量 U
+                self.opti.subject_to(self.X[:, k+1] == A_k @ self.X[:, k] + B_k @ self.U[:, k])
+            else:
+                # 在控制时域外，保持最后一个控制输入
+                self.opti.subject_to(self.X[:, k+1] == A_k @ self.X[:, k] + B_k @ self.U[:, self.N_c-1])
 
-        # 其他约束
+        # 控制输入约束
         self.opti.subject_to(self.opti.bounded(-MAX_STEER_ANGLE, self.U, MAX_STEER_ANGLE))
         self.opti.subject_to(self.X[:, 0] == self.x0)
 
@@ -115,7 +120,7 @@ class MPCController:
         opts = {'ipopt.print_level': 0, 'print_time': 0, 'ipopt.sb': 'yes'}
         self.opti.solver('ipopt', opts)
 
-    def solve(self, vehicle_state, reference_path):
+    def solve(self, vehicle_state, reference_path, velocity_profile=None):
         """
         求解一步MPC。
         
@@ -153,13 +158,31 @@ class MPCController:
         
         # --- 2. 构建时变的A, B矩阵序列 ---
         A_list, B_list = [], []
-        # 简化假设：未来N步的速度都近似为当前速度
-        # 更优的实现会从规划的速度曲线中获取未来速度
+
+        # 处理速度曲线
         vx_current = vehicle_state['vx']
-        for _ in range(self.N):
-            Ad, Bd = self._build_state_space_model(vx_current)
-            A_list.append(Ad)
-            B_list.append(Bd)
+        
+        if velocity_profile is not None and len(velocity_profile) > 0:
+            # 使用预测的速度曲线
+            for i in range(self.N):
+                if i < len(velocity_profile):
+                    vx = velocity_profile[i]
+                    # 避免速度过小导致模型不稳定
+                    if abs(vx) < 0.1:
+                        vx = 0.1 if vx >= 0 else -0.1
+                else:
+                    # 如果速度曲线不够长，使用最后一个可用速度
+                    vx = velocity_profile[-1]
+                
+                Ad, Bd = self._build_state_space_model(vx)
+                A_list.append(Ad)
+                B_list.append(Bd)
+        else:
+            # 回退到原来的方法：使用当前速度作为未来所有步骤的速度
+            for _ in range(self.N):
+                Ad, Bd = self._build_state_space_model(vx_current)
+                A_list.append(Ad)
+                B_list.append(Bd)
         
         A_series_val = np.hstack(A_list)
         B_series_val = np.hstack(B_list)

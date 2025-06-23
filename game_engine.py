@@ -112,6 +112,9 @@ class InputHandler:
         elif event.key == pygame.K_d:
             for vehicle in traffic_manager.vehicles:
                 vehicle.toggle_debug_info()
+        elif event.key == pygame.K_t: 
+             for vehicle in traffic_manager.vehicles:
+                vehicle.toggle_path_visualization()
         elif event.key == pygame.K_r:
             traffic_manager.clear_all_vehicles()
             print("仿真已重置")
@@ -168,10 +171,12 @@ class Renderer:
         # 绘制道路
         road.draw_road_lines(temp_surface, transform_func=camera.world_to_screen)
         road.draw_center_lines(temp_surface, transform_func=camera.world_to_screen)
+
+        road.draw_conflict_zones(temp_surface, transform_func=camera.world_to_screen)
         
         # 绘制所有车辆
         for vehicle in traffic_manager.vehicles:
-            vehicle.draw(temp_surface, transform_func=camera.world_to_screen, scale=camera.zoom)
+            vehicle.draw(temp_surface, transform_func=camera.world_to_screen, small_font=self.small_font, scale=camera.zoom)
         
         # 将临时Surface绘制到屏幕
         self.screen.blit(temp_surface, (0, 0))
@@ -265,7 +270,7 @@ class Renderer:
 
 class GameEngine:
     """游戏引擎，整合所有组件"""
-    def __init__(self, width=800, height=800, title="道路十字路口 - 交通流量仿真"):
+    def __init__(self, width=800, height=800, title="Intersection Simulation"):
         # 初始化pygame
         pygame.init()
         

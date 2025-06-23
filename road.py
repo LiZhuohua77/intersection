@@ -1,6 +1,7 @@
 import pygame
 import math
 import numpy as np
+from path_smoother import smooth_path, resample_path, recalculate_angles
 
 class Road:
     def __init__(self, width=400, height=400, lane_width=4):
@@ -9,10 +10,60 @@ class Road:
         self.lane_width = lane_width
         self.center_x = width // 2
         self.center_y = height // 2
+        self.center = np.array([self.center_x, self.center_y])
         
         # 转弯半径（左转和右转不同）
         self.left_turn_radius = lane_width * 2.5  # 左转半径较大
         self.right_turn_radius = lane_width * 1.5  # 右转半径较小
+
+        zone_half_size = 2 * self.lane_width
+        self.conflict_zone = pygame.Rect(
+            self.center_x - zone_half_size,
+            self.center_y - zone_half_size,
+            2 * zone_half_size,
+            2 * zone_half_size
+        )
+
+        # 【新增】定义一个更大的“扩展冲突区”或“感知区”
+        # 车辆进入这个区域就需要开始考虑让行决策了
+        # TrafficManager中的should_vehicle_yield会用到它
+        extension_amount = self.lane_width * 5 # 向外扩展3个车道宽度
+        self.extended_conflict_zone = self.conflict_zone.inflate(extension_amount, extension_amount)
+
+    def draw_conflict_zones(self, surface, transform_func=None):
+        """可视化交叉口的核心冲突区和扩展感知区"""
+        if transform_func is None:
+            transform_func = lambda x, y: (x, y)
+
+        # 创建一个临时表面以支持半透明绘图
+        temp_surface = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+
+        # 1. 绘制扩展感知区 (橙色，更透明)
+        extended_color = (255, 165, 0, 40) # Semi-transparent orange
+        extended_points = [
+            self.extended_conflict_zone.topleft,
+            self.extended_conflict_zone.topright,
+            self.extended_conflict_zone.bottomright,
+            self.extended_conflict_zone.bottomleft
+        ]
+        screen_extended_points = [transform_func(p[0], p[1]) for p in extended_points]
+        pygame.draw.polygon(temp_surface, extended_color, screen_extended_points)
+        pygame.draw.polygon(temp_surface, (255, 165, 0, 80), screen_extended_points, 2) # 边界线
+
+        # 2. 绘制核心冲突区 (红色，稍深)
+        conflict_color = (255, 0, 0, 60) # Semi-transparent red
+        conflict_points = [
+            self.conflict_zone.topleft,
+            self.conflict_zone.topright,
+            self.conflict_zone.bottomright,
+            self.conflict_zone.bottomleft
+        ]
+        screen_conflict_points = [transform_func(p[0], p[1]) for p in conflict_points]
+        pygame.draw.polygon(temp_surface, conflict_color, screen_conflict_points)
+        pygame.draw.polygon(temp_surface, (255, 0, 0, 120), screen_conflict_points, 3) # 边界线
+
+        # 将带有透明区域的临时表面绘制到主屏幕上
+        surface.blit(temp_surface, (0, 0))
 
     def draw_road_lines(self, surface, transform_func=None):
         """绘制道路标线
@@ -341,7 +392,7 @@ class Road:
 
         # 直线路段使用更大的间距
         if straight_segment_length is None:
-            straight_segment_length = segment_length * 7  # 直线间距是转弯间距的4倍
+            straight_segment_length = segment_length * 15  # 直线间距是转弯间距的4倍
 
         points = {
             'horizontal_right': [],  # 水平向右行驶
@@ -380,7 +431,7 @@ class Road:
             points['vertical_up'].append((x, y))
         
         # 生成转弯圆弧中心线点
-        num_arc_points = 19
+        num_arc_points = 15
         
         # 南向东右转 (包含进口道、转弯圆弧、出口道)
         route_points = []
@@ -592,7 +643,7 @@ class Road:
         
         return points
 
-    def get_route_points(self, start_direction, end_direction, segment_length=5, straight_segment_length=None):
+    def get_route_points(self, start_direction, end_direction, segment_length=3, straight_segment_length=None):
         """获取从起始方向到结束方向的完整路径点序列
         
         Args:
@@ -608,61 +659,32 @@ class Road:
         centerlines = self.generate_centerline_points(segment_length, straight_segment_length)
         route_points = []
         
-        # 定义路径映射
-        if start_direction == 'south':
-            if end_direction == 'north':  # 直行
-                route_points = centerlines['vertical_up']
-            elif end_direction == 'east':  # 右转
-                route_points = centerlines['turn_south_to_east']
-            elif end_direction == 'west':  # 左转
-                route_points = centerlines['turn_south_to_west']
-        
-        elif start_direction == 'north':
-            if end_direction == 'south':  # 直行
-                route_points = centerlines['vertical_down']
-            elif end_direction == 'west':  # 右转
-                route_points = centerlines['turn_north_to_west']
-            elif end_direction == 'east':  # 左转
-                route_points = centerlines['turn_north_to_east']
-        
-        elif start_direction == 'east':
-            if end_direction == 'west':  # 直行
-                route_points = centerlines['horizontal_left']
-            elif end_direction == 'north':  # 右转
-                route_points = centerlines['turn_east_to_north']
-            elif end_direction == 'south':  # 左转
-                route_points = centerlines['turn_east_to_south']
-        
-        elif start_direction == 'west':
-            if end_direction == 'east':  # 直行
-                route_points = centerlines['horizontal_right']
-            elif end_direction == 'south':  # 右转
-                route_points = centerlines['turn_west_to_south']
-            elif end_direction == 'north':  # 左转
-                route_points = centerlines['turn_west_to_north']
+        # 定义路径映射 
+        move_key = f'turn_{start_direction}_to_{end_direction}'
+        if start_direction == 'south' and end_direction == 'north': move_key = 'vertical_up'
+        elif start_direction == 'north' and end_direction == 'south': move_key = 'vertical_down'
+        elif start_direction == 'east' and end_direction == 'west': move_key = 'horizontal_left'
+        elif start_direction == 'west' and end_direction == 'east': move_key = 'horizontal_right'
 
+        route_points = centerlines.get(move_key, [])
         
-        # Remove duplicate consecutive points
+        # 删除连续的重复点
         filtered_points = self._remove_duplicate_points(route_points)
+        if len(filtered_points) < 3:
+            return {} # 返回空字典表示失败
+
+        xy_points = [[p[0], p[1]] for p in filtered_points]
         
-        # 计算每个点的朝向角度
-        points_with_angle = []
-        for i, point in enumerate(filtered_points):
-            if i == len(filtered_points) - 1:
-                # 最后一个点，使用前一个点的角度
-                if i > 0:
-                    angle = points_with_angle[-1][2]
-                else:
-                    angle = 0
-            else:
-                # 计算当前点到下一个点的方向角度
-                dx = filtered_points[i + 1][0] - point[0]
-                dy = filtered_points[i + 1][1] - point[1]
-                angle = math.atan2(dy, dx)
-            
-            points_with_angle.append((point[0], point[1], angle))
+        # --- 平滑+重采样流程 ---
+        smoothed_xy = smooth_path(xy_points, alpha=0.2, beta=0.3, iterations=100)
+        resampled_xy = resample_path(smoothed_xy, segment_length=2.0)
+        final_points = recalculate_angles(resampled_xy)
         
-        return points_with_angle
+        return {
+            "raw": filtered_points,
+            "smoothed": final_points
+        }
+
 
     def _remove_duplicate_points(self, points, tolerance=1):
         """Remove consecutive duplicate points from a list of points

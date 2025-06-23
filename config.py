@@ -9,10 +9,10 @@ SCREEN_HEIGHT = 800
 
 # 车辆物理参数
 VEHICLE_MASS = 1500  # kg
-VEHICLE_LF = 1.2     # 前轴到质心距离 (m)
-VEHICLE_LR = 1.6     # 后轴到质心距离 (m)
+VEHICLE_LF = 2.5     # 前轴到质心距离 (m)
+VEHICLE_LR = 2.5     # 后轴到质心距离 (m)
 VEHICLE_W = 2.0      # 车辆宽度 (m)
-VEHICLE_L = 4.7      # 车辆长度 (m)
+VEHICLE_L = 5.0      # 车辆长度 (m)
 VEHICLE_IZ = 2500    # 绕Z轴的转动惯量 (kg*m^2)
 VEHICLE_CF = 80000   # 前轮侧偏刚度 (N/rad)
 VEHICLE_CR = 80000   # 后轮侧偏刚度 (N/rad)
@@ -24,10 +24,11 @@ PID_KD = 100.0
 PID_INTEGRAL_MAX = 5000.0 # 积分抗饱和上限
 
 # MPC 控制器参数
-MPC_HORIZON = 15         # 预测时域 N
-MPC_Q = [100.0, 100.0]     # 状态误差权重 [y_e, psi_e]
-MPC_R = [0.1]            # 控制输入权重 [delta]
-MPC_RD = [10.0]          # 控制输入变化率权重 [delta_dot]
+MPC_HORIZON = 20         # 预测时域 N
+MPC_CONTROL_HORIZON = 5  # 控制时域 M
+MPC_Q = [5.0, 200.0]     # 状态误差权重 [y_e, psi_e]
+MPC_R = [1.0]            # 控制输入权重 [delta]
+MPC_RD = [100.0]          # 控制输入变化率权重 [delta_dot]
 MAX_STEER_ANGLE = np.deg2rad(30.0) # 最大方向盘转角
 
 # Gipps 模型参数
