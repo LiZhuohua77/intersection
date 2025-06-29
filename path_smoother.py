@@ -3,18 +3,32 @@ import numpy as np
 import math
 from scipy.interpolate import interp1d # 使用scipy进行更精确的插值
 
-def smooth_path(path, alpha=0.5, beta=0.2, iterations=100):
+def smooth_path(path, alpha=0.9, beta=0.5, iterations=100):
     """
     使用基于梯度下降的优化方法平滑路径。
-    (此函数与上一版相同)
+    
+    Args:
+        path (list): 输入的路径点列表 [[x1, y1], [x2, y2], ...]
+        alpha (float): 数据项权重，控制平滑后的路径与原始路径的接近程度
+                      值越大，路径越接近原始路径；值越小，平滑效果越明显
+        beta (float): 平滑项权重，控制路径的平滑程度
+                     值越大，路径越平滑；值越小，保持更多原始形状
+        iterations (int): 迭代次数，控制优化的充分程度
+                         次数越多，平滑效果越稳定，但计算时间越长
+    
+    Returns:
+        list: 平滑后的路径点列表
     """
     path = np.array(path, dtype=float)
     smoothed_path = np.copy(path)
     
     for _ in range(iterations):
         for i in range(1, len(path) - 1):
+            # 数据项梯度：使平滑路径接近原始路径
             grad_data = alpha * (smoothed_path[i] - path[i])
+            # 平滑项梯度：使相邻点之间更加平滑
             grad_smooth = beta * (2 * smoothed_path[i] - smoothed_path[i-1] - smoothed_path[i+1])
+            # 梯度下降更新
             smoothed_path[i] -= (grad_data + grad_smooth)
             
     return smoothed_path.tolist()

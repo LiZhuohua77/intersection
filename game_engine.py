@@ -102,10 +102,10 @@ class InputHandler:
     
     def _handle_keydown(self, event, traffic_manager):
         if event.key == pygame.K_ESCAPE or event.key == pygame.K_q:
-            return True  # 退出游戏
+            return True  # Exit game
         elif event.key == pygame.K_SPACE or event.key == pygame.K_p:
             self.paused = not self.paused
-            print(f"仿真 {'暂停' if self.paused else '继续'}")
+            print(f"Simulation {'paused' if self.paused else 'resumed'}")
         elif event.key == pygame.K_b:
             for vehicle in traffic_manager.vehicles:
                 vehicle.toggle_bicycle_visualization()
@@ -117,7 +117,7 @@ class InputHandler:
                 vehicle.toggle_path_visualization()
         elif event.key == pygame.K_r:
             traffic_manager.clear_all_vehicles()
-            print("仿真已重置")
+            print("Simulation reset")
         elif event.key == pygame.K_h:
             self.show_help = not self.show_help
             if self.show_help:
@@ -146,7 +146,7 @@ class InputHandler:
         鼠标滚轮 - 缩放
         鼠标拖拽 - 移动视角
         """
-        print(help_text)
+        #print(help_text)
 
 
 class Renderer:
@@ -172,7 +172,7 @@ class Renderer:
         road.draw_road_lines(temp_surface, transform_func=camera.world_to_screen)
         road.draw_center_lines(temp_surface, transform_func=camera.world_to_screen)
 
-        road.draw_conflict_zones(temp_surface, transform_func=camera.world_to_screen)
+        #road.draw_conflict_zones(temp_surface, transform_func=camera.world_to_screen)
         
         # 绘制所有车辆
         for vehicle in traffic_manager.vehicles:
@@ -215,10 +215,10 @@ class Renderer:
     def _render_controls(self, width, height):
         """渲染控制提示"""
         controls = [
-            "1-4: Traffic Patterns",
             "Space/P: Pause/Resume", 
             "B: Bicycle Model",
             "D: Debug Info",
+            "T: Toggle Path Visualization",
             "R: Reset",
             "H: Help",
             "ESC/Q: Quit"
@@ -249,7 +249,7 @@ class Renderer:
             "B - Toggle Bicycle Model", 
             "D - Toggle Debug Info",
             "R - Reset Simulation",
-            "1-4 - Traffic Pattern Switch",
+            "T - Toggle Path Visualization",
             "H - Show/Hide Help",
             "ESC/Q - Quit",
             "",

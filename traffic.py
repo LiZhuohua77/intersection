@@ -2,7 +2,6 @@ import random
 import time
 import numpy as np
 from vehicle import Vehicle
-from intersection_manager import IntersectionManager
 
 class TrafficManager:
     """交通流量管理器"""
@@ -13,7 +12,6 @@ class TrafficManager:
         self.max_vehicles = max_vehicles
         self.vehicle_id_counter = 1
         
-        self.intersection_manager = IntersectionManager()
 
         # 交通流量参数
         self.spawn_intervals = {
@@ -60,13 +58,6 @@ class TrafficManager:
         }
         
         self.current_pattern = 'normal'
-        
-        # 车辆类型分布
-        self.vehicle_types = {
-            'car': {'probability': 1, 'speed': 10.0, 'color': (200, 50, 50)},
-            'truck': {'probability': 0, 'speed': 12.0, 'color': (100, 100, 200)},
-            'bus': {'probability': 0, 'speed': 10.0, 'color': (50, 200, 50)}
-        }
     
     def set_traffic_pattern(self, pattern_name):
         """设置交通流量模式"""
@@ -86,18 +77,6 @@ class TrafficManager:
         weights = list(probabilities.values())
         
         return np.random.choice(directions, p=weights)
-    
-    def get_random_vehicle_type(self):
-        """随机选择车辆类型"""
-        rand = random.random()
-        cumulative = 0
-        
-        for vehicle_type, config in self.vehicle_types.items():
-            cumulative += config['probability']
-            if rand <= cumulative:
-                return vehicle_type, config
-        
-        return 'car', self.vehicle_types['car']
     
     def can_spawn_vehicle(self, start_direction):
         """检查是否可以在指定方向生成车辆"""
@@ -133,84 +112,34 @@ class TrafficManager:
     
     def spawn_vehicle(self, start_direction):
         """在指定方向生成车辆"""
-        # can_spawn_vehicle 逻辑保持不变...
         if not self.can_spawn_vehicle(start_direction):
             return None
         
         end_direction = self.get_random_destination(start_direction)
-        vehicle_type, type_config = self.get_random_vehicle_type()
         
         try:
             vehicle = Vehicle(self.road, start_direction, end_direction, self.vehicle_id_counter)
-            vehicle.color = type_config['color']
-            # vehicle.vehicle_type = vehicle_type # 如果需要，可以添加这个属性
             
             self.vehicles.append(vehicle)
             self.vehicle_id_counter += 1
             self.last_spawn_time[start_direction] = time.time()
             
-            print(f"生成车辆 #{vehicle.vehicle_id}: {vehicle_type} 从 {start_direction} 到 {end_direction}")
+            print(f"生成车辆 #{vehicle.vehicle_id}: 从 {start_direction} 到 {end_direction}")
             return vehicle
         except ValueError as e:
             print(f"无法生成车辆: {e}")
             return None
 
-    def should_vehicle_yield(self, ego_vehicle, all_vehicles):
-        """
-        判断一个车辆在交叉口是否需要让行。
-        这是所有车辆进行交叉口决策的中央查询函数。
-        """
-        ego_move = ego_vehicle.move_str
-        ego_pos = np.array([ego_vehicle.state['x'], ego_vehicle.state['y']])
-
-        for other_vehicle in all_vehicles:
-            if ego_vehicle.vehicle_id == other_vehicle.vehicle_id:
-                continue
-
-            other_move = other_vehicle.move_str
-            
-            # 1. 检查通行优先级
-            rule = self.intersection_manager.check_yield_required(ego_move, other_move)
-            if rule == 0: # 无冲突规则
-                continue
-            
-            # 2. 如果存在让行或汇入规则，再判断对方车辆是否构成实际威胁
-            is_other_in_conflict_zone = self.road.conflict_zone.collidepoint(
-                other_vehicle.state['x'], other_vehicle.state['y']
-            )
-            is_other_near_conflict_zone = self.road.extended_conflict_zone.collidepoint(
-                other_vehicle.state['x'], other_vehicle.state['y']
-            )
-
-            # 只有当对方车辆已经在冲突区或即将进入时，才需要考虑让行
-            if not (is_other_in_conflict_zone or is_other_near_conflict_zone):
-                continue
-
-            # a) 如果是严格的让行规则
-            if rule == 1:
-                return True # 必须让行
-
-            # b) 如果是汇入冲突规则，采用“先到先得”
-            if rule == 3:
-                dist_ego_to_center = np.linalg.norm(ego_pos - self.road.center)
-                dist_other_to_center = np.linalg.norm(np.array([other_vehicle.state['x'], other_vehicle.state['y']]) - self.road.center)
-                if dist_other_to_center < dist_ego_to_center:
-                    return True # 对方离交叉口中心更近，我让行
-
-        # 遍历完所有车辆都没有发现需要让行的情况
-        return False
 
     def update(self, dt):
         """更新交通管理器"""
-        # 生成车辆的逻辑保持不变...
         directions = ['north', 'south', 'east', 'west']
         for direction in directions:
             if random.random() < 0.1: # 降低生成频率以观察单个车辆
                 self.spawn_vehicle(direction)
         
-        # 更新所有车辆的调用方式
+        # 更新所有车辆
         for vehicle in self.vehicles[:]:
-            # 现在，车辆自己处理所有逻辑，我们只需要传递dt和所有车辆列表用于感知
             vehicle.update(dt, self.vehicles, self)
             
             if vehicle.completed:
@@ -222,7 +151,6 @@ class TrafficManager:
         stats = {
             'total_vehicles': len(self.vehicles),
             'by_direction': {'north': 0, 'south': 0, 'east': 0, 'west': 0},
-            'by_type': {'car': 0, 'truck': 0, 'bus': 0},
             'average_speed': 0
         }
         
@@ -233,11 +161,9 @@ class TrafficManager:
                 if vehicle.start_direction in stats['by_direction']:
                     stats['by_direction'][vehicle.start_direction] += 1
                 
-                # 统计车辆类型
-                if hasattr(vehicle, 'vehicle_type') and vehicle.vehicle_type in stats['by_type']:
-                    stats['by_type'][vehicle.vehicle_type] += 1
-                
-
+                total_speed += vehicle.state.get('speed', 0)
+            
+            stats['average_speed'] = total_speed / len(self.vehicles)
         
         return stats
     
@@ -254,8 +180,7 @@ class TrafficManager:
             f"Traffic Mode: {self.traffic_patterns[self.current_pattern]['description']}",
             f"Total Vehicles: {stats['total_vehicles']}/{self.max_vehicles}",
             f"Average Speed: {stats['average_speed']:.1f} m/s",
-            f"By Direction: N:{stats['by_direction']['north']} S:{stats['by_direction']['south']} E:{stats['by_direction']['east']} W:{stats['by_direction']['west']}",
-            f"Vehicle Types: Car:{stats['by_type']['car']} Truck:{stats['by_type']['truck']} Bus:{stats['by_type']['bus']}"
+            f"By Direction: N:{stats['by_direction']['north']} S:{stats['by_direction']['south']} E:{stats['by_direction']['east']} W:{stats['by_direction']['west']}"
         ]
         
         for i, text in enumerate(debug_texts):

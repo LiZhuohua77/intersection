@@ -24,7 +24,6 @@ class Road:
             2 * zone_half_size
         )
 
-        # 【新增】定义一个更大的“扩展冲突区”或“感知区”
         # 车辆进入这个区域就需要开始考虑让行决策了
         # TrafficManager中的should_vehicle_yield会用到它
         extension_amount = self.lane_width * 5 # 向外扩展3个车道宽度

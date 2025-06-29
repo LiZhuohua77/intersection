@@ -1,2 +1,5 @@
 __pycache__/*.pyc
 test.py
+ramp.py
+trajectory.csv
+simulation.mp4

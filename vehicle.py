@@ -156,57 +156,31 @@ class Vehicle:
                 
         return leader
 
-    def update(self, dt, all_vehicles, traffic_manager):
+    def update(self, dt, all_vehicles, traffic_manager=None):
         """
         车辆的“心跳”函数，执行一步完整的感知-决策-控制循环。
         """
         if self.completed:
             return
 
-        # 1. 更新自身状态
-        self._update_intersection_status()
+        # 1. 感知 (Perception)
+        leader_vehicle = self.find_leader(all_vehicles)
+        leader_state = leader_vehicle.get_state() if leader_vehicle else None
 
-        # 2. 交叉口决策
-        # 只在到达决策点且未做决策时，进行一次决策
-        if self.is_approaching_decision_point and not self.decision_made:
-            self.is_yielding = traffic_manager.should_vehicle_yield(self, all_vehicles)
-            
-            # 增加概率性让行
-            if not self.is_yielding and random.random() < 0.05:
-                self.is_yielding = True
-                print(f"Vehicle {self.vehicle_id} is yielding voluntarily.")
-
-            # 无论结果如何，决策已做出
-            self.decision_made = True 
-
-            if self.is_yielding:
-                print(f"Vehicle {self.vehicle_id} DECIDED TO YIELD.")
-            else:
-                print(f"Vehicle {self.vehicle_id} DECIDED TO PROCEED.")
-
-
-        # 3. 控制计算
+        # 2. 决策与控制 (Decision & Control)
         # a. 纵向控制
-        should_stop = self.is_yielding and not self.has_passed_intersection
-        if should_stop:
-            target_speed = 0.0
-        else:
-            leader_vehicle = self.find_leader(all_vehicles)
-            leader_state = leader_vehicle.get_state() if leader_vehicle else None
-            target_speed = self.gipps_model.calculate_target_speed(self.state, leader_state)
-        
+        target_speed = self.gipps_model.calculate_target_speed(self.state, leader_state)
         throttle_brake = self.pid_controller.step(target_speed, self.state['vx'], dt)
         
         # b. 横向控制
         steering_angle = self.mpc_controller.solve(self.state, self.reference_path)
-        self.last_steering_angle = steering_angle
         
-        # 4. 执行
+        # 3. 执行 (Actuation) - 更新车辆物理状态
         self._update_physics(throttle_brake, steering_angle, dt)
 
-        # 5. 检查完成
+        # 4. 检查是否完成路径
         dist_to_end = np.linalg.norm([self.state['x'] - self.reference_path[-1][0], self.state['y'] - self.reference_path[-1][1]])
-        if dist_to_end < 10.0:
+        if dist_to_end < 10.0: # 到达终点附近
             self.completed = True
 
     def _update_physics(self, fx_total, delta, dt):
