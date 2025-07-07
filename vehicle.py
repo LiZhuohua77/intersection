@@ -2,100 +2,72 @@
 
 import pygame
 import numpy as np
-import random
+import time
 from config import *
-from longitudinal_control import GippsModel, PIDController
+from longitudinal_control import PIDController
 from lateral_control import MPCController
+from longitudinal_planner import LongitudinalPlanner
+
 
 class Vehicle:
     """
     一个独立的智能车辆代理。
-    它拥有自己的物理属性、状态、路径以及一套完整的控制器。
+    它拥有自己的物理属性、状态、路径以及一套集成的规划器与控制器。
     """
     def __init__(self, road, start_direction, end_direction, vehicle_id):
+        # --- 基本属性初始化 ---
         self.road = road
         self.start_direction = start_direction
         self.end_direction = end_direction
         self.vehicle_id = vehicle_id
-
         self.move_str = f"{start_direction[0].upper()}_{end_direction[0].upper()}"
-        
+
+        # --- 路径与几何信息 ---
         path_data = self.road.get_route_points(start_direction, end_direction)
         if not path_data or not path_data["smoothed"]:
             raise ValueError(f"无法为车辆 {self.vehicle_id} 生成从 {self.move_str} 的路径")
-            
+        
+
         self.raw_path = path_data["raw"]
+        
         self.reference_path = path_data["smoothed"] 
         self.path_points_np = np.array([[p[0], p[1]] for p in self.reference_path])
         self.path_distances = np.insert(np.cumsum(np.sqrt(np.sum(np.diff(self.path_points_np, axis=0)**2, axis=1))), 0, 0)
 
+        # --- 车辆状态 ---
         initial_pos = self.reference_path[0]
         initial_psi = self.reference_path[1][2]
-
-        # 车辆状态
         self.state = {
-            'x': initial_pos[0],
-            'y': initial_pos[1],
-            'psi': initial_psi,
-            'vx': 0.1,  # 初始给一个很小的速度防止计算问题
-            'vy': 0.0,
-            'psi_dot': 0.0
+            'x': initial_pos[0], 'y': initial_pos[1], 'psi': initial_psi,
+            'vx': 15, 'vy': 0.0, 'psi_dot': 0.0,
         }
 
-        # 车辆物理属性 (从config加载)
+        # --- 物理属性 ---
         self.m, self.Iz, self.lf, self.lr, self.Cf, self.Cr = VEHICLE_MASS, VEHICLE_IZ, VEHICLE_LF, VEHICLE_LR, VEHICLE_CF, VEHICLE_CR
         self.width, self.length = VEHICLE_W, VEHICLE_L
 
-        # --- 每个车辆拥有自己的一套控制器 ---
-        self.gipps_model = GippsModel()
+        # --- 规划器与控制器 ---
+        vehicle_params = {'a_max': GIPPS_A, 'b_max': GIPPS_B, 'v_desired': GIPPS_V_DESIRED, 'length': self.length}
+        mpc_params = {'N': MPC_HORIZON}
+        self.planner = LongitudinalPlanner(vehicle_params, mpc_params)
         self.pid_controller = PIDController()
         self.mpc_controller = MPCController()
+        self.current_velocity_profile = []
 
-        # 仿真状态
+        # --- 仿真状态标志 ---
         self.completed = False
-        self.color = (200, 200, 200) # 默认颜色
-        self.path_index = 0
-
-        path_data = self.road.get_route_points(start_direction, end_direction)
-        if not path_data or not path_data["smoothed"]:
-            raise ValueError(f"无法为车辆 {self.vehicle_id} 生成从 {start_direction} 到 {end_direction} 的路径")
+        self.color = (200, 200, 200)
+        self.last_steering_angle = 0.0
         
-        self.raw_path = path_data["raw"]
-        self.reference_path = path_data["smoothed"] # 控制器使用平滑后的路径
-
-
+        # 交叉口相关状态
+        self.is_in_intersection = False
+        self.has_passed_intersection = False
+        
+        # 可视化开关
         self.show_path_visualization = False
         self.show_debug = True
         self.show_bicycle_model = False
-        self.last_steering_angle = 0.0
 
-        self.decision_point_index = self._calculate_decision_point_index()
-        self.is_approaching_decision_point = False
-        self.is_in_intersection = False
-        self.has_passed_intersection = False
-        self.is_yielding = False # 是否处于让行停车状态
-        self.decision_made = False # 是否已做出通过/让行的决策
-
-    def _calculate_decision_point_index(self):
-        """计算并返回决策点在路径上的索引"""
-        a_max = abs(GIPPS_B)
-        v_safe = GIPPS_V_DESIRED 
-        d_stop = (v_safe**2) / (2 * a_max) + self.length # 加上车长作为缓冲
-
-        # 找到路径上第一个进入交叉口冲突区的点
-        entry_index = -1
-        for i, point in enumerate(self.reference_path):
-            if self.road.conflict_zone.collidepoint(point[0], point[1]):
-                entry_index = i
-                break
-        if entry_index == -1: return -1 # 路径不经过交叉口
-
-        # 从入口点向前回溯，找到距离满足d_stop的点
-        for i in range(entry_index, -1, -1):
-            distance_to_entry = self.path_distances[entry_index] - self.path_distances[i]
-            if distance_to_entry >= d_stop:
-                return i
-        return 0 # 如果路径太短，就在起点决策
 
     def _update_intersection_status(self):
         """根据车辆位置更新交叉口相关的状态标志"""
@@ -158,30 +130,121 @@ class Vehicle:
 
     def update(self, dt, all_vehicles, traffic_manager=None):
         """
-        车辆的“心跳”函数，执行一步完整的感知-决策-控制循环。
+        车辆的“心跳”函数，执行一步完整的“感知-规划-控制”循环。
         """
         if self.completed:
             return
 
-        # 1. 感知 (Perception)
-        leader_vehicle = self.find_leader(all_vehicles)
-        leader_state = leader_vehicle.get_state() if leader_vehicle else None
+        # 1. 感知 (Perception) - 更新自身在交叉口的位置状态
+        self._update_intersection_status()
 
-        # 2. 决策与控制 (Decision & Control)
-        # a. 纵向控制
-        target_speed = self.gipps_model.calculate_target_speed(self.state, leader_state)
+        # 2. 规划 (Planning) - 调用纵向规划器生成未来速度曲线
+        #    这是整个决策的核心，它会处理所有跟驰和交叉口让行逻辑
+        self.current_velocity_profile = self.planner.plan(self, all_vehicles)
+        
+        # 从规划好的速度曲线中，提取出当前帧的目标速度
+        target_speed = self.current_velocity_profile[0] if self.current_velocity_profile else 0.0
+        
+        # 3. 控制 (Control)
+        # a. 纵向控制: PID控制器追踪规划器给出的当前目标速度
         throttle_brake = self.pid_controller.step(target_speed, self.state['vx'], dt)
         
-        # b. 横向控制
-        steering_angle = self.mpc_controller.solve(self.state, self.reference_path)
+        # b. 横向控制: MPC控制器使用完整的速度曲线进行更精准的路径跟踪
+        #    为了效率，当车辆几乎停止时，暂停MPC计算
+        if self.state['vx'] < 0.2:
+            steering_angle = 0.0
+        else:
+            steering_angle = self.mpc_controller.solve(self.state, self.reference_path, self.current_velocity_profile)
+        self.last_steering_angle = steering_angle
         
-        # 3. 执行 (Actuation) - 更新车辆物理状态
+        # 4. 执行 (Actuation) - 根据控制指令更新车辆物理状态
         self._update_physics(throttle_brake, steering_angle, dt)
 
-        # 4. 检查是否完成路径
+        # 5. 状态更新与可视化
+        self._update_visual_feedback(target_speed)
+        self._check_completion()
+
+    # --------------------------------------------------------------------------
+    #  辅助方法 (Helper Methods)
+    # --------------------------------------------------------------------------
+
+    def get_safe_stopping_distance(self):
+        """根据当前速度动态计算安全停车距离（制动距离+车长缓冲）"""
+        return (self.state['vx']**2) / (2 * abs(GIPPS_B)) + self.length
+
+    def get_current_longitudinal_pos(self):
+        """获取车辆在自身路径上的纵向投影距离"""
+        current_pos = np.array([self.state['x'], self.state['y']])
+        distances_to_ego = np.linalg.norm(self.path_points_np - current_pos, axis=1)
+        current_path_index = np.argmin(distances_to_ego)
+        return self.path_distances[current_path_index]
+
+    def _update_intersection_status(self):
+        """更新交叉口相关的状态标志"""
+        if self.has_passed_intersection:
+            return
+        
+        current_pos = np.array([self.state['x'], self.state['y']])
+        is_currently_in = self.road.conflict_zone.collidepoint(current_pos[0], current_pos[1])
+
+        if is_currently_in:
+            self.is_in_intersection = True
+        elif self.is_in_intersection:  # 刚驶出交叉口
+            self.has_passed_intersection = True
+            self.is_in_intersection = False
+
+    def _update_visual_feedback(self, target_speed):
+        """根据当前决策更新车辆颜色，用于调试"""
+        # 如果目标速度远小于当前速度，意味着正在减速让行
+        if target_speed < self.state['vx'] - 0.5 and target_speed < GIPPS_V_DESIRED - 1.0:
+            self.color = (255, 165, 0)  # 橙色: 正在减速让行
+        elif self.is_in_intersection:
+            self.color = (0, 255, 100)  # 亮绿: 正在通过交叉口
+        else:
+            self.color = (200, 200, 200)  # 默认: 正常行驶
+
+    def _check_completion(self):
+        """检查是否到达路径终点"""
         dist_to_end = np.linalg.norm([self.state['x'] - self.reference_path[-1][0], self.state['y'] - self.reference_path[-1][1]])
-        if dist_to_end < 10.0: # 到达终点附近
+        if dist_to_end < 10.0:
             self.completed = True
+
+    # --------------------------------------------------------------------------
+    #  交通规则判断 (Traffic Rule Logic - Called by Planner)
+    #  这些方法被规划器调用，以判断路权归属
+    # --------------------------------------------------------------------------
+
+    def _get_maneuver_type(self):
+        """根据起止方向判断车辆的行驶意图"""
+        start, end = self.start_direction, self.end_direction
+        if (start, end) in [('north', 'south'), ('south', 'north'), ('east', 'west'), ('west', 'east')]: return 'straight'
+        if (start, end) in [('north', 'east'), ('south', 'west'), ('east', 'north'), ('west', 'south')]: return 'right'
+        return 'left'
+
+    def _does_path_conflict(self, other_vehicle):
+        """通过查询Road对象中的冲突矩阵来高效判断路径是否冲突"""
+        return self.road.do_paths_conflict(self.move_str, other_vehicle.move_str)
+
+    def has_priority_over(self, other_vehicle):
+        """
+        根据确定性规则，判断本车(self)是否比另一辆车(other_vehicle)有更高优先级。
+        """
+        # 规则1: 通行路权优先
+        priority_map = {'straight': 3, 'right': 2, 'left': 1}
+        my_priority = priority_map[self._get_maneuver_type()]
+        other_priority = priority_map[other_vehicle._get_maneuver_type()]
+        if my_priority > other_priority: return True
+        if my_priority < other_priority: return False
+
+        # 规则2: "让右"原则
+        right_of_map = {'west': 'north', 'south': 'west', 'east': 'south', 'north': 'east'}
+        if right_of_map.get(other_vehicle.start_direction) == self.start_direction: return True
+        if right_of_map.get(self.start_direction) == other_vehicle.start_direction: return False
+
+        # 规则3: "先到先得" (简化为离交叉口更近者优先)
+        my_dist_to_end = self.path_distances[-1] - self.get_current_longitudinal_pos()
+        other_dist_to_end = other_vehicle.path_distances[-1] - other_vehicle.get_current_longitudinal_pos()
+        return my_dist_to_end < other_dist_to_end
 
     def _update_physics(self, fx_total, delta, dt):
         """物理引擎，与上一版相同"""
@@ -340,7 +403,6 @@ class Vehicle:
         """返回当前车辆状态的字典"""
         return self.state
 
-    # 添加你的 game_engine.py 需要的空方法，防止报错
     def toggle_bicycle_visualization(self):
         """切换自行车模型的可视化显示"""
         self.show_bicycle_model = not self.show_bicycle_model

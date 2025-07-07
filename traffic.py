@@ -187,3 +187,28 @@ class TrafficManager:
             color = (200, 200, 200) if i == 0 else (255, 255, 255)
             text_surface = font.render(text, True, color)
             surface.blit(text_surface, (10, 40 + i * 20))
+            
+    def create_test_scenario(self):
+        """
+        创建特定的测试场景：两辆车同时生成，一辆从南到北，另一辆从东到西
+        
+        Returns:
+            tuple: (南北车辆, 东西车辆) - 用于后续观察和调试
+        """
+        # 首先清空当前所有车辆，确保测试环境干净
+        self.clear_all_vehicles()
+        
+        # 创建南到北的车辆
+        south_to_north_vehicle = Vehicle(self.road, 'south', 'north', self.vehicle_id_counter)
+        self.vehicles.append(south_to_north_vehicle)
+        self.vehicle_id_counter += 1
+        print(f"测试场景: 生成车辆 #{south_to_north_vehicle.vehicle_id} - 从南向北行驶")
+        
+        # 创建东到西的车辆
+        east_to_west_vehicle = Vehicle(self.road, 'east', 'west', self.vehicle_id_counter)
+        self.vehicles.append(east_to_west_vehicle)
+        self.vehicle_id_counter += 1
+        print(f"测试场景: 生成车辆 #{east_to_west_vehicle.vehicle_id} - 从东向西行驶")
+        
+        # 为了便于后续调试，返回这两辆车的引用
+        return south_to_north_vehicle, east_to_west_vehicle

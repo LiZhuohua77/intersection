@@ -122,6 +122,9 @@ class InputHandler:
             self.show_help = not self.show_help
             if self.show_help:
                 self._print_help()
+        elif event.key == pygame.K_w:
+            south_north_car, east_west_car = traffic_manager.create_test_scenario()
+            print("测试场景已创建！")
         elif event.key == pygame.K_1:
             traffic_manager.set_traffic_pattern('light')
         elif event.key == pygame.K_2:
@@ -131,6 +134,7 @@ class InputHandler:
         elif event.key == pygame.K_4:
             traffic_manager.set_traffic_pattern('night')
         return False
+
     
     def _print_help(self):
         """打印帮助信息"""
@@ -172,7 +176,7 @@ class Renderer:
         road.draw_road_lines(temp_surface, transform_func=camera.world_to_screen)
         road.draw_center_lines(temp_surface, transform_func=camera.world_to_screen)
 
-        #road.draw_conflict_zones(temp_surface, transform_func=camera.world_to_screen)
+        road.draw_conflict_zones(temp_surface, transform_func=camera.world_to_screen)
         
         # 绘制所有车辆
         for vehicle in traffic_manager.vehicles:

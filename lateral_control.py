@@ -123,62 +123,36 @@ class MPCController:
     def solve(self, vehicle_state, reference_path, velocity_profile=None):
         """
         求解一步MPC。
-        
-        Args:
-            vehicle_state (dict): 车辆当前状态。
-            reference_path (list): [ [x,y,psi], [x,y,psi], ... ] 参考路径点。
-        
-        Returns:
-            float: 计算出的最优前轮转角 (rad)。
+        现在它将优先使用传入的velocity_profile来构建时变模型。
         """
         # --- 1. 计算误差和准备参考序列 ---
-        # 这是一个简化的实现，实际中需要更复杂的坐标转换和匹配算法
-        # 找到最近的参考点
         current_pos = np.array([vehicle_state['x'], vehicle_state['y']])
         path_points = np.array([p[:2] for p in reference_path])
         distances = np.linalg.norm(path_points - current_pos, axis=1)
         closest_idx = np.argmin(distances)
-
-        # 计算横向误差 y_e 和航向误差 psi_e
         ref_point = reference_path[closest_idx]
         dx = vehicle_state['x'] - ref_point[0]
         dy = vehicle_state['y'] - ref_point[1]
         ref_psi = ref_point[2]
-        
         y_e = -dx * np.sin(ref_psi) + dy * np.cos(ref_psi)
-        psi_e = vehicle_state['psi'] - ref_psi
-        # 规范化角度到 [-pi, pi]
-        psi_e = (psi_e + np.pi) % (2 * np.pi) - np.pi
-        
-        # 构建当前状态向量
+        psi_e = (vehicle_state['psi'] - ref_psi + np.pi) % (2 * np.pi) - np.pi
         x0_val = np.array([y_e, psi_e, vehicle_state['vy'], vehicle_state['psi_dot']])
-
-        # 构建参考序列 X_ref (理想情况是误差为0)
         xref_val = np.zeros((2, self.N + 1))
-        
+
         # --- 2. 构建时变的A, B矩阵序列 ---
         A_list, B_list = [], []
-
-        # 处理速度曲线
-        vx_current = vehicle_state['vx']
         
-        if velocity_profile is not None and len(velocity_profile) > 0:
-            # 使用预测的速度曲线
+        # 优先使用规划好的速度曲线
+        if velocity_profile and len(velocity_profile) > 0:
             for i in range(self.N):
-                if i < len(velocity_profile):
-                    vx = velocity_profile[i]
-                    # 避免速度过小导致模型不稳定
-                    if abs(vx) < 0.1:
-                        vx = 0.1 if vx >= 0 else -0.1
-                else:
-                    # 如果速度曲线不够长，使用最后一个可用速度
-                    vx = velocity_profile[-1]
-                
+                # 如果曲线不够长，则使用最后一个速度值
+                vx = velocity_profile[i] if i < len(velocity_profile) else velocity_profile[-1]
                 Ad, Bd = self._build_state_space_model(vx)
                 A_list.append(Ad)
                 B_list.append(Bd)
         else:
-            # 回退到原来的方法：使用当前速度作为未来所有步骤的速度
+            # 如果没有提供速度曲线，则回退到使用当前速度
+            vx_current = vehicle_state['vx']
             for _ in range(self.N):
                 Ad, Bd = self._build_state_space_model(vx_current)
                 A_list.append(Ad)
@@ -196,15 +170,10 @@ class MPCController:
 
         try:
             sol = self.opti.solve()
-            # 提取第一个控制输入，处理1D或2D数组
             u_opt = sol.value(self.U)
-            if u_opt.ndim == 2:  # If 2D array
-                optimal_control = u_opt[0, 0]
-            else:  # If 1D array
-                optimal_control = u_opt[0]
+            optimal_control = u_opt[0, 0] if u_opt.ndim == 2 else u_opt[0]
             self.last_control = optimal_control
             return optimal_control
         except Exception as e:
-            print(f"MPC solver failed: {e}")
-            # 如果求解失败，返回上一次的控制量或者0
+            # print(f"MPC solver failed: {e}")
             return self.last_control

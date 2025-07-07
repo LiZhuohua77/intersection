@@ -1,8 +1,25 @@
+# road.py
+
 import pygame
 import math
 import numpy as np
 from path_smoother import smooth_path, resample_path, recalculate_angles
+from config import *
 
+CONFLICT_MATRIX = {
+    'E_N': {'E_N': False, 'E_S': False, 'E_W': False, 'N_E': True, 'N_S': True, 'N_W': True, 'S_E': True, 'S_N': True, 'S_W': True, 'W_E': True, 'W_N': True, 'W_S': True},
+    'E_S': {'E_N': False, 'E_S': False, 'E_W': False, 'N_E': False, 'N_S': True, 'N_W': True, 'S_E': True, 'S_N': False, 'S_W': False, 'W_E': True, 'W_N': False, 'W_S': True},
+    'E_W': {'E_N': False, 'E_S': False, 'E_W': False, 'N_E': True, 'N_S': True, 'N_W': True, 'S_E': True, 'S_N': True, 'S_W': True, 'W_E': False, 'W_N': False, 'W_S': False},
+    'N_E': {'E_N': True, 'E_S': False, 'E_W': True, 'N_E': False, 'N_S': False, 'N_W': False, 'S_E': False, 'S_N': True, 'S_W': False, 'W_E': False, 'W_N': True, 'W_S': False},
+    'N_S': {'E_N': True, 'E_S': True, 'E_W': True, 'N_E': False, 'N_S': False, 'N_W': False, 'S_E': True, 'S_N': False, 'S_W': False, 'W_E': True, 'W_N': False, 'W_S': True},
+    'N_W': {'E_N': True, 'E_S': True, 'E_W': True, 'N_E': False, 'N_S': False, 'N_W': False, 'S_E': True, 'S_N': True, 'S_W': True, 'W_E': True, 'W_N': True, 'W_S': True},
+    'S_E': {'E_N': True, 'E_S': True, 'E_W': True, 'N_E': False, 'N_S': True, 'N_W': True, 'S_E': False, 'S_N': False, 'S_W': False, 'W_E': True, 'W_N': True, 'W_S': True},
+    'S_N': {'E_N': True, 'E_S': False, 'E_W': True, 'N_E': True, 'N_S': False, 'N_W': True, 'S_E': False, 'S_N': False, 'S_W': False, 'W_E': True, 'W_N': True, 'W_S': False},
+    'S_W': {'E_N': True, 'E_S': False, 'E_W': True, 'N_E': False, 'N_S': False, 'N_W': True, 'S_E': False, 'S_N': False, 'S_W': False, 'W_E': True, 'W_N': False, 'W_S': True},
+    'W_E': {'E_N': True, 'E_S': True, 'E_W': False, 'N_E': False, 'N_S': True, 'N_W': True, 'S_E': True, 'S_N': True, 'S_W': True, 'W_E': False, 'W_N': False, 'W_S': False},
+    'W_N': {'E_N': True, 'E_S': False, 'E_W': False, 'N_E': True, 'N_S': False, 'N_W': True, 'S_E': True, 'S_N': True, 'S_W': False, 'W_E': False, 'W_N': False, 'W_S': False},
+    'W_S': {'E_N': True, 'E_S': True, 'E_W': False, 'N_E': False, 'N_S': True, 'N_W': True, 'S_E': True, 'S_N': False, 'S_W': True, 'W_E': False, 'W_N': False, 'W_S': False}
+}
 class Road:
     def __init__(self, width=400, height=400, lane_width=4):
         self.width = width
@@ -11,6 +28,8 @@ class Road:
         self.center_x = width // 2
         self.center_y = height // 2
         self.center = np.array([self.center_x, self.center_y])
+
+        self.routes = {}
         
         # 转弯半径（左转和右转不同）
         self.left_turn_radius = lane_width * 2.5  # 左转半径较大
@@ -24,10 +43,10 @@ class Road:
             2 * zone_half_size
         )
 
-        # 车辆进入这个区域就需要开始考虑让行决策了
-        # TrafficManager中的should_vehicle_yield会用到它
-        extension_amount = self.lane_width * 5 # 向外扩展3个车道宽度
-        self.extended_conflict_zone = self.conflict_zone.inflate(extension_amount, extension_amount)
+        safe_stopping_distance = - (GIPPS_V_DESIRED**2)/(2*GIPPS_B)
+        self.extended_conflict_zone = self.conflict_zone.inflate(safe_stopping_distance, safe_stopping_distance)
+
+        self.conflict_matrix = CONFLICT_MATRIX
 
     def draw_conflict_zones(self, surface, transform_func=None):
         """可视化交叉口的核心冲突区和扩展感知区"""
@@ -654,6 +673,12 @@ class Road:
         Returns:
             list: 完整路径的点序列，每个元素为 (x, y, angle) 元组，angle为弧度制朝向角度
         """
+        move_str = f"{start_direction[0].upper()}_{end_direction[0].upper()}"
+        
+        # 如果已经计算过这条路径，直接返回缓存结果
+        if move_str in self.routes:
+            return self.routes[move_str]
+        
         # 使用变密度生成路径点
         centerlines = self.generate_centerline_points(segment_length, straight_segment_length)
         route_points = []
@@ -675,14 +700,19 @@ class Road:
         xy_points = [[p[0], p[1]] for p in filtered_points]
         
         # --- 平滑+重采样流程 ---
-        smoothed_xy = smooth_path(xy_points, alpha=0.2, beta=0.3, iterations=100)
+        smoothed_xy = smooth_path(xy_points, alpha=0.3, beta=0.5, iterations=100)
         resampled_xy = resample_path(smoothed_xy, segment_length=2.0)
         final_points = recalculate_angles(resampled_xy)
         
-        return {
+        result = {
             "raw": filtered_points,
             "smoothed": final_points
         }
+        
+        # 缓存计算结果
+        self.routes[move_str] = result
+        
+        return result
 
 
     def _remove_duplicate_points(self, points, tolerance=1):
@@ -710,6 +740,81 @@ class Road:
                 filtered_points.append(point)
         
         return filtered_points
+
+    def do_paths_conflict(self, move_str1, move_str2):
+        """
+        通过查询预计算的冲突矩阵，高效地判断两条路径是否冲突。
+        """
+        # 使用.get()方法来安全地查询，如果键不存在则返回False
+        return self.conflict_matrix.get(move_str1, {}).get(move_str2, False)
+
+    def get_conflict_entry_index(self, move_str):
+        """
+        获取指定路径进入扩展冲突区域的第一个点的索引。
+        
+        Args:
+            move_str: 路径标识符
+            
+        Returns:
+            int: 第一个进入扩展冲突区域的点的索引，如果路径不存在或不经过冲突区，返回-1
+        """
+        # 确保路径存在
+        if not hasattr(self, 'routes') or move_str not in self.routes:
+            return -1
+                
+        path_points = self.routes[move_str]["smoothed"]
+        for i, point in enumerate(path_points):
+            # 检查点是否在预定义的扩展冲突区矩形内
+            if self.extended_conflict_zone.collidepoint(point[0], point[1]):
+                return i # 返回第一个冲突点的索引
+        
+        return -1 # 如果路径不经过冲突区，返回-1
+    
+    def visualize_conflict_entry_point(self, surface, start_direction, end_direction, color=(255, 0, 0), point_radius=5, transform_func=None):
+        """
+        可视化指定路径进入扩展冲突区域的第一个点。
+        
+        Args:
+            surface: pygame surface对象
+            start_direction: 起始方向 ('north', 'south', 'east', 'west')
+            end_direction: 结束方向 ('north', 'south', 'east', 'west') 
+            color: 点的颜色
+            point_radius: 点的半径
+            transform_func: 坐标转换函数
+        """
+        if transform_func is None:
+            transform_func = lambda x, y: (x, y)
+        
+        # 获取路径点
+        route_data = self.get_route_points(start_direction, end_direction)
+        if not route_data or "smoothed" not in route_data:
+            return  # 路径不存在
+            
+        path_points = route_data["smoothed"]
+        
+        # 查找进入冲突区的第一个点
+        entry_index = -1
+        for i, point in enumerate(path_points):
+            if self.extended_conflict_zone.collidepoint(point[0], point[1]):
+                entry_index = i
+                break
+                
+        if entry_index == -1:
+            return  # 没有点进入冲突区
+            
+        # 获取点坐标
+        point = path_points[entry_index]
+        print(point)
+        x, y = point[0], point[1]
+        
+        # 应用坐标转换
+        screen_x, screen_y = transform_func(x, y)
+        
+        # 绘制高亮点
+        pygame.draw.circle(surface, color, (screen_x, screen_y), point_radius)
+        
+        # 添加一个环形标记使点更明显
+        pygame.draw.circle(surface, (255, 255, 255), (screen_x, screen_y), point_radius + 2, 2)
 
     def visualize_centerline_points(self, surface, point_radius=2, show_all=True, route_key=None, transform_func=None):
         """可视化中心线点序列
