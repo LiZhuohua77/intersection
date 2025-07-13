@@ -254,7 +254,7 @@ class Vehicle:
         """根据起止方向判断车辆的行驶意图"""
         start, end = self.start_direction, self.end_direction
         if (start, end) in [('north', 'south'), ('south', 'north'), ('east', 'west'), ('west', 'east')]: return 'straight'
-        if (start, end) in [('north', 'east'), ('south', 'west'), ('east', 'north'), ('west', 'south')]: return 'right'
+        if (start, end) in [('north', 'west'), ('south', 'east'), ('east', 'north'), ('west', 'south')]: return 'right'
         return 'left'
 
     def _does_path_conflict(self, other_vehicle):
@@ -263,9 +263,9 @@ class Vehicle:
 
     def has_priority_over(self, other_vehicle):
         """
-        根据确定性规则，判断本车(self)是否比另一辆车(other_vehicle)有更高优先级。
+        判断本车(self)是否比另一辆车(other_vehicle)具有更高通行优先级。
         """
-        # 规则1: 通行路权优先（直行 > 右转 > 左转）
+        # 规则1: 通行方向优先（直 > 右 > 左）
         priority_map = {'straight': 3, 'right': 2, 'left': 1}
         my_priority = priority_map[self._get_maneuver_type()]
         other_priority = priority_map[other_vehicle._get_maneuver_type()]
@@ -274,23 +274,24 @@ class Vehicle:
         if my_priority < other_priority:
             return False
 
-        # 规则2: 先到先得（离交叉口更近者优先）
+        # 规则2: 先到先得（距离更近者优先）
         my_dist_to_end = self.path_distances[-1] - self.get_current_longitudinal_pos()
         other_dist_to_end = other_vehicle.path_distances[-1] - other_vehicle.get_current_longitudinal_pos()
-        if my_dist_to_end < other_dist_to_end:
-            return True
-        if my_dist_to_end > other_dist_to_end:
-            return False
+        
+        dist_diff = my_dist_to_end - other_dist_to_end
+        if abs(dist_diff) > 0.5:  # 差距显著，则更近者优先
+            return dist_diff < 0
 
-        # 规则3: 让右原则
+        # 规则3: 同时到达，启用让右规则
         right_of_map = {'west': 'south', 'south': 'east', 'east': 'north', 'north': 'west'}
         if right_of_map.get(other_vehicle.start_direction) == self.start_direction:
             return True
         if right_of_map.get(self.start_direction) == other_vehicle.start_direction:
             return False
 
-        # 最后，默认不具备优先权
+        # 平级处理，默认不具备优先权
         return False
+
 
 
     def _update_physics(self, fx_total, delta, dt):
