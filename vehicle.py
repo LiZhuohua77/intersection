@@ -52,7 +52,18 @@ class Vehicle:
         self.planner = LongitudinalPlanner(vehicle_params, mpc_params)
         self.pid_controller = PIDController()
         self.mpc_controller = MPCController()
-        self.current_velocity_profile = []
+
+        self.v_desired = GIPPS_V_DESIRED  # 期望速度
+        
+
+        # --- 速度规划缓冲区 (Speed Profile Buffer) ---
+        self.profile_buffer_size = int(10 / SIMULATION_DT)  # 维持一个约10秒长的速度规划缓冲区
+        self.speed_profile_buffer = []                      # 存储未来速度规划的列表
+        self.current_step_index = 0                         # 指向缓冲区中当前目标速度的索引
+        self.profile_base_speed = GIPPS_V_DESIRED           # 用于自动扩展缓冲区的默认速度
+
+        self.is_yielding = False
+        
 
         # --- 仿真状态标志 ---
         self.completed = False
@@ -68,6 +79,36 @@ class Vehicle:
         self.show_debug = True
         self.show_bicycle_model = False
 
+        self._initialize_speed_profile(all_vehicles=[])
+
+    def _initialize_speed_profile(self, all_vehicles):
+        """用Gipps基础曲线初始化速度缓冲区"""
+        self.speed_profile_buffer = self.planner.generate_initial_profile(self)
+
+    def get_current_target_speed(self, all_vehicles):
+        """安全地获取当前目标速度，并在需要时用Gipps模型动态扩展缓冲区"""
+        while self.current_step_index >= len(self.speed_profile_buffer):
+            leader = self.find_leader(all_vehicles)
+            if leader:
+                base_speed = self.planner.gipps_model.calculate_target_speed(self, leader)
+            else:
+                base_speed = self.v_desired
+            self.speed_profile_buffer.append(base_speed)
+        return self.speed_profile_buffer[self.current_step_index]
+
+    def insert_profile_patch(self, patch, method='min', start_index=None):
+        """将补丁注入缓冲区"""
+        if start_index is None: start_index = self.current_step_index
+        patch_len = len(patch)
+        required_len = start_index + patch_len
+        while len(self.speed_profile_buffer) < required_len:
+            self.speed_profile_buffer.append(self.profile_base_speed)
+        for i in range(patch_len):
+            idx = start_index + i
+            if method == 'min':
+                self.speed_profile_buffer[idx] = min(self.speed_profile_buffer[idx], patch[i])
+            elif method == 'overwrite':
+                self.speed_profile_buffer[idx] = patch[i]
 
     def _update_intersection_status(self):
         """根据车辆位置更新交叉口相关的状态标志"""
@@ -94,7 +135,7 @@ class Vehicle:
             self.is_yielding = False # 进入后不再让行，必须快速通过
             self.decision_made = True
 
-    def find_leader(self, all_vehicles, lane_width=3.5):
+    def find_leader(self, all_vehicles, lane_width=4):
         
         leader = None
         min_longitudinal_dist = float('inf')
@@ -127,40 +168,35 @@ class Vehicle:
                 leader = other_vehicle
                 
         return leader
-
+    
     def update(self, dt, all_vehicles, traffic_manager=None):
-        """
-        车辆的“心跳”函数，执行一步完整的“感知-规划-控制”循环。
-        """
+        """车辆主更新循环，采用简化的“减速让行”逻辑"""
         if self.completed:
             return
 
-        # 1. 感知 (Perception) - 更新自身在交叉口的位置状态
-        self._update_intersection_status()
+        # 1. 规划 (Planning) - 检查是否需要注入让行补丁
+        planner_command = self.planner.determine_action(self, all_vehicles)
+        
+        if planner_command['action'] == 'yield':
+            self.is_yielding = True # 标记已触发让行，避免重复
+            self.insert_profile_patch(planner_command['profile'], method='min')
 
-        # 2. 规划 (Planning) - 调用纵向规划器生成未来速度曲线
-        #    这是整个决策的核心，它会处理所有跟驰和交叉口让行逻辑
-        self.current_velocity_profile = self.planner.plan(self, all_vehicles)
-        
-        # 从规划好的速度曲线中，提取出当前帧的目标速度
-        target_speed = self.current_velocity_profile[0] if self.current_velocity_profile else 0.0
-        
-        # 3. 控制 (Control)
-        # a. 纵向控制: PID控制器追踪规划器给出的当前目标速度
+        # 2. 提取目标速度
+        target_speed = self.get_current_target_speed(all_vehicles)
+
+        # 3. 控制与执行
         throttle_brake = self.pid_controller.step(target_speed, self.state['vx'], dt)
         
-        # b. 横向控制: MPC控制器使用完整的速度曲线进行更精准的路径跟踪
-        #    为了效率，当车辆几乎停止时，暂停MPC计算
-        if self.state['vx'] < 0.2:
-            steering_angle = 0.0
-        else:
-            steering_angle = self.mpc_controller.solve(self.state, self.reference_path, self.current_velocity_profile)
+        # MPC 现在总是安全的，因为车辆速度不会为0
+        future_profile = self.speed_profile_buffer[self.current_step_index:]
+        steering_angle = self.mpc_controller.solve(self.state, self.reference_path, future_profile)
         self.last_steering_angle = steering_angle
         
-        # 4. 执行 (Actuation) - 根据控制指令更新车辆物理状态
         self._update_physics(throttle_brake, steering_angle, dt)
 
-        # 5. 状态更新与可视化
+        # 4. 推进状态
+        self.current_step_index += 1
+        self._update_intersection_status()
         self._update_visual_feedback(target_speed)
         self._check_completion()
 
@@ -229,22 +265,33 @@ class Vehicle:
         """
         根据确定性规则，判断本车(self)是否比另一辆车(other_vehicle)有更高优先级。
         """
-        # 规则1: 通行路权优先
+        # 规则1: 通行路权优先（直行 > 右转 > 左转）
         priority_map = {'straight': 3, 'right': 2, 'left': 1}
         my_priority = priority_map[self._get_maneuver_type()]
         other_priority = priority_map[other_vehicle._get_maneuver_type()]
-        if my_priority > other_priority: return True
-        if my_priority < other_priority: return False
+        if my_priority > other_priority:
+            return True
+        if my_priority < other_priority:
+            return False
 
-        # 规则2: "让右"原则
-        right_of_map = {'west': 'north', 'south': 'west', 'east': 'south', 'north': 'east'}
-        if right_of_map.get(other_vehicle.start_direction) == self.start_direction: return True
-        if right_of_map.get(self.start_direction) == other_vehicle.start_direction: return False
-
-        # 规则3: "先到先得" (简化为离交叉口更近者优先)
+        # 规则2: 先到先得（离交叉口更近者优先）
         my_dist_to_end = self.path_distances[-1] - self.get_current_longitudinal_pos()
         other_dist_to_end = other_vehicle.path_distances[-1] - other_vehicle.get_current_longitudinal_pos()
-        return my_dist_to_end < other_dist_to_end
+        if my_dist_to_end < other_dist_to_end:
+            return True
+        if my_dist_to_end > other_dist_to_end:
+            return False
+
+        # 规则3: 让右原则
+        right_of_map = {'west': 'south', 'south': 'east', 'east': 'north', 'north': 'west'}
+        if right_of_map.get(other_vehicle.start_direction) == self.start_direction:
+            return True
+        if right_of_map.get(self.start_direction) == other_vehicle.start_direction:
+            return False
+
+        # 最后，默认不具备优先权
+        return False
+
 
     def _update_physics(self, fx_total, delta, dt):
         """物理引擎，与上一版相同"""

@@ -1,3 +1,5 @@
+# game_engine.py
+
 import pygame
 import math
 
@@ -175,18 +177,76 @@ class Renderer:
         # 绘制道路
         road.draw_road_lines(temp_surface, transform_func=camera.world_to_screen)
         road.draw_center_lines(temp_surface, transform_func=camera.world_to_screen)
-
         road.draw_conflict_zones(temp_surface, transform_func=camera.world_to_screen)
         
         # 绘制所有车辆
         for vehicle in traffic_manager.vehicles:
             vehicle.draw(temp_surface, transform_func=camera.world_to_screen, small_font=self.small_font, scale=camera.zoom)
         
+        # 绘制冲突进入点（新添加）
+        for vehicle in traffic_manager.vehicles:
+            self.visualize_conflict_entry_point(
+                temp_surface,
+                road,
+                vehicle.start_direction,
+                vehicle.end_direction,
+                color=(255, 0, 0),
+                point_radius=5,
+                transform_func=camera.world_to_screen
+            )
+        
         # 将临时Surface绘制到屏幕
         self.screen.blit(temp_surface, (0, 0))
         
         # 绘制UI
         self._render_ui(traffic_manager, camera, input_handler, width, height)
+    
+    def visualize_conflict_entry_point(self, surface, road, start_direction, end_direction, color=(255, 0, 0), point_radius=5, transform_func=None):
+        """
+        可视化指定路径进入扩展冲突区域的第一个点。
+        
+        Args:
+            surface: pygame surface对象
+            road: Road 对象，提供路径点和冲突区域
+            start_direction: 起始方向 ('north', 'south', 'east', 'west')
+            end_direction: 结束方向 ('north', 'south', 'east', 'west') 
+            color: 点的颜色
+            point_radius: 点的半径
+            transform_func: 坐标转换函数
+        """
+        if transform_func is None:
+            transform_func = lambda x, y: (x, y)
+        
+        # 获取路径点
+        route_data = road.get_route_points(start_direction, end_direction)
+        if not route_data or "smoothed" not in route_data:
+            return  # 路径不存在
+            
+        path_points = route_data["smoothed"]
+        
+        # 查找进入冲突区的第一个点
+        entry_index = -1
+        for i, point in enumerate(path_points):
+            if road.extended_conflict_zone.collidepoint(point[0], point[1]):
+                entry_index = i
+                break
+                
+        if entry_index == -1:
+            return  # 没有点进入冲突区
+            
+        # 获取点坐标
+        point = path_points[entry_index]
+        # print(point)  # 可选：用于调试
+        x, y = point[0], point[1]
+        
+        # 应用坐标转换
+        screen_x, screen_y = transform_func(x, y)
+        
+        # 绘制高亮点
+        pygame.draw.circle(surface, color, (screen_x, screen_y), point_radius)
+        
+        # 添加一个环形标记使点更明显
+        pygame.draw.circle(surface, (255, 255, 255), (screen_x, screen_y), point_radius + 2, 2)
     
     def _render_ui(self, traffic_manager, camera, input_handler, width, height):
         """渲染用户界面"""

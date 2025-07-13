@@ -10,7 +10,6 @@ def main():
     # 创建道路对象和交通管理器
     road = Road()
     traffic_manager = TrafficManager(road, max_vehicles=2)
-    
     # 主游戏循环
     try:
         while game_engine.is_running():

@@ -7,18 +7,18 @@ from path_smoother import smooth_path, resample_path, recalculate_angles
 from config import *
 
 CONFLICT_MATRIX = {
-    'E_N': {'E_N': False, 'E_S': False, 'E_W': False, 'N_E': True, 'N_S': True, 'N_W': True, 'S_E': True, 'S_N': True, 'S_W': True, 'W_E': True, 'W_N': True, 'W_S': True},
-    'E_S': {'E_N': False, 'E_S': False, 'E_W': False, 'N_E': False, 'N_S': True, 'N_W': True, 'S_E': True, 'S_N': False, 'S_W': False, 'W_E': True, 'W_N': False, 'W_S': True},
-    'E_W': {'E_N': False, 'E_S': False, 'E_W': False, 'N_E': True, 'N_S': True, 'N_W': True, 'S_E': True, 'S_N': True, 'S_W': True, 'W_E': False, 'W_N': False, 'W_S': False},
-    'N_E': {'E_N': True, 'E_S': False, 'E_W': True, 'N_E': False, 'N_S': False, 'N_W': False, 'S_E': False, 'S_N': True, 'S_W': False, 'W_E': False, 'W_N': True, 'W_S': False},
-    'N_S': {'E_N': True, 'E_S': True, 'E_W': True, 'N_E': False, 'N_S': False, 'N_W': False, 'S_E': True, 'S_N': False, 'S_W': False, 'W_E': True, 'W_N': False, 'W_S': True},
-    'N_W': {'E_N': True, 'E_S': True, 'E_W': True, 'N_E': False, 'N_S': False, 'N_W': False, 'S_E': True, 'S_N': True, 'S_W': True, 'W_E': True, 'W_N': True, 'W_S': True},
-    'S_E': {'E_N': True, 'E_S': True, 'E_W': True, 'N_E': False, 'N_S': True, 'N_W': True, 'S_E': False, 'S_N': False, 'S_W': False, 'W_E': True, 'W_N': True, 'W_S': True},
-    'S_N': {'E_N': True, 'E_S': False, 'E_W': True, 'N_E': True, 'N_S': False, 'N_W': True, 'S_E': False, 'S_N': False, 'S_W': False, 'W_E': True, 'W_N': True, 'W_S': False},
-    'S_W': {'E_N': True, 'E_S': False, 'E_W': True, 'N_E': False, 'N_S': False, 'N_W': True, 'S_E': False, 'S_N': False, 'S_W': False, 'W_E': True, 'W_N': False, 'W_S': True},
-    'W_E': {'E_N': True, 'E_S': True, 'E_W': False, 'N_E': False, 'N_S': True, 'N_W': True, 'S_E': True, 'S_N': True, 'S_W': True, 'W_E': False, 'W_N': False, 'W_S': False},
-    'W_N': {'E_N': True, 'E_S': False, 'E_W': False, 'N_E': True, 'N_S': False, 'N_W': True, 'S_E': True, 'S_N': True, 'S_W': False, 'W_E': False, 'W_N': False, 'W_S': False},
-    'W_S': {'E_N': True, 'E_S': True, 'E_W': False, 'N_E': False, 'N_S': True, 'N_W': True, 'S_E': True, 'S_N': False, 'S_W': True, 'W_E': False, 'W_N': False, 'W_S': False}
+    'E_N': {'E_N': False, 'E_S': False, 'E_W': False, 'N_E': False, 'N_S': False, 'N_W': False, 'S_E': False, 'S_N': True, 'S_W': False, 'W_E': False, 'W_N': True, 'W_S': False},
+    'E_S': {'E_N': False, 'E_S': False, 'E_W': False, 'N_E': True, 'N_S': True, 'N_W': False, 'S_E': False, 'S_N': True, 'S_W': True, 'W_E': True, 'W_N': False, 'W_S': False},
+    'E_W': {'E_N': False, 'E_S': False, 'E_W': False, 'N_E': True, 'N_S': True, 'N_W': True, 'S_E': False, 'S_N': True, 'S_W': True, 'W_E': False, 'W_N': True, 'W_S': False},
+    'N_E': {'E_N': False, 'E_S': True, 'E_W': True, 'N_E': False, 'N_S': False, 'N_W': False, 'S_E': True, 'S_N': True, 'S_W': False, 'W_E': True, 'W_N': True, 'W_S': False},
+    'N_S': {'E_N': False, 'E_S': True, 'E_W': True, 'N_E': False, 'N_S': False, 'N_W': False, 'S_E': False, 'S_N': False, 'S_W': True, 'W_E': True, 'W_N': True, 'W_S': True},
+    'N_W': {'E_N': False, 'E_S': False, 'E_W': True, 'N_E': False, 'N_S': False, 'N_W': True, 'S_E': False, 'S_N': False, 'S_W': False, 'W_E': False, 'W_N': False, 'W_S': False},
+    'S_E': {'E_N': False, 'E_S': False, 'E_W': False, 'N_E': True, 'N_S': False, 'N_W': False, 'S_E': False, 'S_N': False, 'S_W': False, 'W_E': True, 'W_N': False, 'W_S': False},
+    'S_N': {'E_N': True, 'E_S': True, 'E_W': True, 'N_E': False, 'N_S': False, 'N_W': True, 'S_E': False, 'S_N': False, 'S_W': False, 'W_E': True, 'W_N': True, 'W_S': False},
+    'S_W': {'E_N': False, 'E_S': True, 'E_W': True, 'N_E': False, 'N_S': True, 'N_W': True, 'S_E': False, 'S_N': False, 'S_W': False, 'W_E': True, 'W_N': True, 'W_S': False},
+    'W_E': {'E_N': False, 'E_S': True, 'E_W': False, 'N_E': True, 'N_S': True, 'N_W': False, 'S_E': True, 'S_N': True, 'S_W': True, 'W_E': False, 'W_N': False, 'W_S': False},
+    'W_N': {'E_N': True, 'E_S': False, 'E_W': True, 'N_E': True, 'N_S': True, 'N_W': False, 'S_E': False, 'S_N': True, 'S_W': True, 'W_E': False, 'W_N': False, 'W_S': False},
+    'W_S': {'E_N': False, 'E_S': True, 'E_W': False, 'N_E': False, 'N_S': True, 'N_W': False, 'S_E': False, 'S_N': False, 'S_W': False, 'W_E': False, 'W_N': False, 'W_S': False}
 }
 class Road:
     def __init__(self, width=400, height=400, lane_width=4):
@@ -701,7 +701,7 @@ class Road:
         
         # --- 平滑+重采样流程 ---
         smoothed_xy = smooth_path(xy_points, alpha=0.3, beta=0.5, iterations=100)
-        resampled_xy = resample_path(smoothed_xy, segment_length=2.0)
+        resampled_xy = resample_path(smoothed_xy, segment_length=0.5)
         final_points = recalculate_angles(resampled_xy)
         
         result = {
@@ -816,80 +816,4 @@ class Road:
         # 添加一个环形标记使点更明显
         pygame.draw.circle(surface, (255, 255, 255), (screen_x, screen_y), point_radius + 2, 2)
 
-    def visualize_centerline_points(self, surface, point_radius=2, show_all=True, route_key=None, transform_func=None):
-        """可视化中心线点序列
-        
-        Args:
-            surface: pygame surface对象
-            point_radius: 点的半径
-            show_all: 是否显示所有路径的点
-            route_key: 如果指定，只显示特定路径的点
-            transform_func: 坐标转换函数
-        """
-        if transform_func is None:
-            transform_func = lambda x, y: (x, y)
-            
-        points_dict = self.generate_centerline_points()
-        
-        # 定义颜色
-        colors = {
-            'horizontal_right': (255, 0, 0),    # 红色
-            'horizontal_left': (0, 255, 0),     # 绿色
-            'vertical_down': (0, 0, 255),       # 蓝色
-            'vertical_up': (255, 255, 0),       # 黄色
-            'turn_south_to_east': (255, 0, 255), # 紫色
-            'turn_south_to_west': (0, 255, 255), # 青色
-            'turn_north_to_west': (255, 128, 0), # 橙色
-            'turn_north_to_east': (128, 255, 0), # 黄绿色
-            'turn_east_to_north': (128, 0, 255), # 紫蓝色
-            'turn_east_to_south': (255, 128, 128), # 粉红色
-            'turn_west_to_south': (128, 255, 128), # 浅绿色
-            'turn_west_to_north': (128, 128, 255)  # 浅蓝色
-        }
-        
-        if show_all:
-            # 显示所有路径的点
-            for key, points in points_dict.items():
-                color = colors.get(key, (255, 255, 255))
-                for i, point in enumerate(points):
-                    if i % 3 == 0:  # 稀疏显示点，避免太密集
-                        # 应用坐标转换
-                        screen_x, screen_y = transform_func(point[0], point[1])
-                        pygame.draw.circle(surface, color, (screen_x, screen_y), point_radius)
-        elif route_key and route_key in points_dict:
-            # 只显示指定路径的点
-            color = colors.get(route_key, (255, 255, 255))
-            for point in points_dict[route_key]:
-                # 应用坐标转换
-                screen_x, screen_y = transform_func(point[0], point[1])
-                pygame.draw.circle(surface, color, (screen_x, screen_y), point_radius)
-
-    def visualize_route_points(self, surface, start_direction, end_direction, point_radius=1, color=(255, 0, 0), transform_func=None):
-        """可视化特定路径的点序列
-        
-        Args:
-            surface: pygame surface对象
-            start_direction: 起始方向
-            end_direction: 结束方向
-            point_radius: 点的半径
-            color: 点的颜色
-            transform_func: 坐标转换函数
-        """
-        if transform_func is None:
-            transform_func = lambda x, y: (x, y)
-            
-        route_points = self.get_route_points(start_direction, end_direction)
-        
-        for i, point in enumerate(route_points):
-            # 使用渐变颜色表示方向
-            alpha = min(255, 100 + i * 2)
-            current_color = (*color, alpha) if len(color) == 3 else color
-            
-            # 应用坐标转换
-            screen_x, screen_y = transform_func(point[0], point[1])
-            
-            # 创建临时surface来支持alpha混合
-            temp_surface = pygame.Surface((point_radius * 2, point_radius * 2), pygame.SRCALPHA)
-            pygame.draw.circle(temp_surface, current_color, (point_radius, point_radius), point_radius)
-            surface.blit(temp_surface, (screen_x - point_radius, screen_y - point_radius))
 

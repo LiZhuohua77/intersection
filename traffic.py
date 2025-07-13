@@ -1,3 +1,5 @@
+# traffic.py
+
 import random
 import time
 import numpy as np
@@ -16,9 +18,9 @@ class TrafficManager:
         # 交通流量参数
         self.spawn_intervals = {
             'north': 3.0,  # 从北边进入的车辆间隔时间（秒）
-            'south': 4.0,  # 从南边进入的车辆间隔时间（秒）
-            'east': 3.5,   # 从东边进入的车辆间隔时间（秒）
-            'west': 2.5    # 从西边进入的车辆间隔时间（秒）
+            'south': 3.0,  # 从南边进入的车辆间隔时间（秒）
+            'east': 3.0,   # 从东边进入的车辆间隔时间（秒）
+            'west': 3.0    # 从西边进入的车辆间隔时间（秒）
         }
         
         # 上次生成车辆的时间
