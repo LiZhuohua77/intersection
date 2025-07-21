@@ -201,13 +201,13 @@ class TrafficManager:
         self.clear_all_vehicles()
         
         # 创建南到北的车辆
-        south_to_north_vehicle = Vehicle(self.road, 'south', 'north', self.vehicle_id_counter)
+        south_to_north_vehicle = Vehicle(self.road, 'south', 'west', self.vehicle_id_counter)
         self.vehicles.append(south_to_north_vehicle)
         self.vehicle_id_counter += 1
-        print(f"测试场景: 生成车辆 #{south_to_north_vehicle.vehicle_id} - 从南向北行驶")
-        
+        print(f"测试场景: 生成车辆 #{south_to_north_vehicle.vehicle_id} - 从南向西行驶")
+
         # 创建东到西的车辆
-        east_to_west_vehicle = Vehicle(self.road, 'east', 'west', self.vehicle_id_counter)
+        east_to_west_vehicle = Vehicle(self.road, 'west', 'east', self.vehicle_id_counter)
         self.vehicles.append(east_to_west_vehicle)
         self.vehicle_id_counter += 1
         print(f"测试场景: 生成车辆 #{east_to_west_vehicle.vehicle_id} - 从东向西行驶")

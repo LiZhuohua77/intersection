@@ -265,32 +265,92 @@ class Vehicle:
         """
         判断本车(self)是否比另一辆车(other_vehicle)具有更高通行优先级。
         """
-        # 规则1: 通行方向优先（直 > 右 > 左）
+        # 规则1: Time-based FCFS（先进入冲突区的先通过）
+        my_entry_time = self._estimate_entry_time()
+        other_entry_time = other_vehicle._estimate_entry_time()
+        
+        if my_entry_time < other_entry_time:
+            print(f"Priority: Vehicle {self.vehicle_id} has priority over {other_vehicle.vehicle_id} using Rule 1 (Time-based FCFS)")
+            return True
+        if my_entry_time > other_entry_time:
+            print(f"Priority: Vehicle {self.vehicle_id} yields to {other_vehicle.vehicle_id} using Rule 1 (Time-based FCFS)")
+            return False
+        
+        # 规则2: Direction Priority（直 > 右 > 左）
         priority_map = {'straight': 3, 'right': 2, 'left': 1}
         my_priority = priority_map[self._get_maneuver_type()]
         other_priority = priority_map[other_vehicle._get_maneuver_type()]
+        
         if my_priority > other_priority:
+            print(f"Priority: Vehicle {self.vehicle_id} has priority over {other_vehicle.vehicle_id} using Rule 2 (Direction Priority)")
             return True
         if my_priority < other_priority:
+            print(f"Priority: Vehicle {self.vehicle_id} yields to {other_vehicle.vehicle_id} using Rule 2 (Direction Priority)")
             return False
-
-        # 规则2: 先到先得（距离更近者优先）
-        my_dist_to_end = self.path_distances[-1] - self.get_current_longitudinal_pos()
-        other_dist_to_end = other_vehicle.path_distances[-1] - other_vehicle.get_current_longitudinal_pos()
         
-        dist_diff = my_dist_to_end - other_dist_to_end
-        if abs(dist_diff) > 0.5:  # 差距显著，则更近者优先
-            return dist_diff < 0
-
-        # 规则3: 同时到达，启用让右规则
+        # 规则3: Right-of-Way（让右）
         right_of_map = {'west': 'south', 'south': 'east', 'east': 'north', 'north': 'west'}
         if right_of_map.get(other_vehicle.start_direction) == self.start_direction:
+            print(f"Priority: Vehicle {self.vehicle_id} has priority over {other_vehicle.vehicle_id} using Rule 3 (Right-of-Way)")
             return True
         if right_of_map.get(self.start_direction) == other_vehicle.start_direction:
+            print(f"Priority: Vehicle {self.vehicle_id} yields to {other_vehicle.vehicle_id} using Rule 3 (Right-of-Way)")
             return False
-
+        
         # 平级处理，默认不具备优先权
+        print(f"Priority: Vehicle {self.vehicle_id} yields to {other_vehicle.vehicle_id} using default rule")
         return False
+
+    def _estimate_entry_time(self):
+        """
+        估计车辆进入冲突区的时间，考虑减速行为。
+        """
+        entry_index = self.road.get_conflict_entry_index(f"{self.start_direction[0].upper()}_{self.end_direction[0].upper()}")
+        if entry_index == -1:
+            return float('inf')  # 如果车辆不进入冲突区，返回无穷大
+        
+        current_pos = self.get_current_longitudinal_pos()
+        entry_pos = self.path_distances[entry_index]
+        distance_to_entry = entry_pos - current_pos
+        
+        if distance_to_entry <= 0:
+            return 0  # 已经进入冲突区
+        
+        # 获取车辆当前速度
+        current_speed = self.get_current_speed()
+        if current_speed == 0:
+            return float('inf')  # 静止车辆
+        
+        # 检查是否处于让行状态
+        if hasattr(self, 'is_yielding') and self.is_yielding:
+            # 获取LongitudinalPlanner实例（假设车辆有一个planner属性）
+            planner = self.planner if hasattr(self, 'planner') else LongitudinalPlanner({'a_max': GIPPS_A, 'b_max': GIPPS_B, 'v_desired': GIPPS_V_DESIRED}, {'N': MPC_HORIZON})
+            
+            # 生成让行速度曲线
+            profile = planner._generate_yielding_profile(current_speed)
+            
+            # 计算覆盖distance_to_entry所需的时间
+            time = 0
+            distance_covered = 0
+            dt = planner.dt
+            
+            for v in profile:
+                if distance_covered >= distance_to_entry:
+                    break
+                distance_covered += v * dt
+                time += dt
+            
+            # 如果距离未覆盖完，假设以最后一个速度继续
+            if distance_covered < distance_to_entry:
+                remaining_distance = distance_to_entry - distance_covered
+                last_speed = profile[-1] if profile else current_speed
+                if last_speed > 0:
+                    time += remaining_distance / last_speed
+            
+            return time
+        else:
+            # 非让行状态，假设以当前速度恒速行驶
+            return distance_to_entry / current_speed
 
 
 
@@ -442,6 +502,10 @@ class Vehicle:
             
         # 再随车身一起旋转和平移
         return self._rotate_and_transform(rotated_wheel, x, y, psi, transform_func)
+    
+    def get_current_speed(self):
+        """获取车辆当前的总速度（标量速度，基于 vx 和 vy）"""
+        return np.sqrt(self.state['vx']**2 + self.state['vy']**2)
 
     def toggle_debug_info(self):
         """切换调试信息的显示"""

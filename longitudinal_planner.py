@@ -39,7 +39,6 @@ class LongitudinalPlanner:
         self.N = mpc_params.get('N', MPC_HORIZON) 
         self.gipps_model = GippsModel()
 
-    # ------------------ 私有辅助方法 (Private Helpers) ------------------
 
     def _generate_profile_to_target(self, current_vx, target_vx, N):
         """生成从当前速度平滑过渡到目标速度的曲线"""
