@@ -44,7 +44,7 @@ class Road:
         )
 
         safe_stopping_distance = - (GIPPS_V_DESIRED**2)/(2*GIPPS_B)
-        self.extended_conflict_zone = self.conflict_zone.inflate(safe_stopping_distance, safe_stopping_distance)
+        self.extended_conflict_zone = self.conflict_zone.inflate(2 * safe_stopping_distance, 2 * safe_stopping_distance)
 
         self.conflict_matrix = CONFLICT_MATRIX
 
@@ -57,7 +57,7 @@ class Road:
         temp_surface = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
 
         # 1. 绘制扩展感知区 (橙色，更透明)
-        extended_color = (255, 165, 0, 40) # Semi-transparent orange
+        extended_color = (255, 165, 0, 0) # Semi-transparent orange
         extended_points = [
             self.extended_conflict_zone.topleft,
             self.extended_conflict_zone.topright,
@@ -765,7 +765,7 @@ class Road:
         path_points = self.routes[move_str]["smoothed"]
         for i, point in enumerate(path_points):
             # 检查点是否在预定义的扩展冲突区矩形内
-            if self.extended_conflict_zone.collidepoint(point[0], point[1]):
+            if self.conflict_zone.collidepoint(point[0], point[1]):
                 return i # 返回第一个冲突点的索引
         
         return -1 # 如果路径不经过冲突区，返回-1

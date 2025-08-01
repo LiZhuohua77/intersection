@@ -183,17 +183,6 @@ class Renderer:
         for vehicle in traffic_manager.vehicles:
             vehicle.draw(temp_surface, transform_func=camera.world_to_screen, small_font=self.small_font, scale=camera.zoom)
         
-        # 绘制冲突进入点（新添加）
-        for vehicle in traffic_manager.vehicles:
-            self.visualize_conflict_entry_point(
-                temp_surface,
-                road,
-                vehicle.start_direction,
-                vehicle.end_direction,
-                color=(255, 0, 0),
-                point_radius=5,
-                transform_func=camera.world_to_screen
-            )
         
         # 将临时Surface绘制到屏幕
         self.screen.blit(temp_surface, (0, 0))
@@ -201,52 +190,6 @@ class Renderer:
         # 绘制UI
         self._render_ui(traffic_manager, camera, input_handler, width, height)
     
-    def visualize_conflict_entry_point(self, surface, road, start_direction, end_direction, color=(255, 0, 0), point_radius=5, transform_func=None):
-        """
-        可视化指定路径进入扩展冲突区域的第一个点。
-        
-        Args:
-            surface: pygame surface对象
-            road: Road 对象，提供路径点和冲突区域
-            start_direction: 起始方向 ('north', 'south', 'east', 'west')
-            end_direction: 结束方向 ('north', 'south', 'east', 'west') 
-            color: 点的颜色
-            point_radius: 点的半径
-            transform_func: 坐标转换函数
-        """
-        if transform_func is None:
-            transform_func = lambda x, y: (x, y)
-        
-        # 获取路径点
-        route_data = road.get_route_points(start_direction, end_direction)
-        if not route_data or "smoothed" not in route_data:
-            return  # 路径不存在
-            
-        path_points = route_data["smoothed"]
-        
-        # 查找进入冲突区的第一个点
-        entry_index = -1
-        for i, point in enumerate(path_points):
-            if road.extended_conflict_zone.collidepoint(point[0], point[1]):
-                entry_index = i
-                break
-                
-        if entry_index == -1:
-            return  # 没有点进入冲突区
-            
-        # 获取点坐标
-        point = path_points[entry_index]
-        # print(point)  # 可选：用于调试
-        x, y = point[0], point[1]
-        
-        # 应用坐标转换
-        screen_x, screen_y = transform_func(x, y)
-        
-        # 绘制高亮点
-        pygame.draw.circle(surface, color, (screen_x, screen_y), point_radius)
-        
-        # 添加一个环形标记使点更明显
-        pygame.draw.circle(surface, (255, 255, 255), (screen_x, screen_y), point_radius + 2, 2)
     
     def _render_ui(self, traffic_manager, camera, input_handler, width, height):
         """渲染用户界面"""
@@ -333,57 +276,44 @@ class Renderer:
 
 
 class GameEngine:
-    """游戏引擎，整合所有组件"""
-    def __init__(self, width=800, height=800, title="Intersection Simulation"):
-        # 初始化pygame
+    """游戏引擎，现在主要负责渲染和用户交互。"""
+    def __init__(self, width=800, height=800, title="RL Intersection Simulation"):
         pygame.init()
-        
-        # 创建窗口
         self.screen = pygame.display.set_mode((width, height), pygame.RESIZABLE)
         pygame.display.set_caption(title)
         
-        # 游戏时钟
         self.clock = pygame.time.Clock()
         self.fps = 60
         self.running = True
         
-        # 创建各个组件
+        # 引擎现在拥有视图和控制器组件
         self.camera = Camera(width, height)
         self.input_handler = InputHandler()
         self.renderer = Renderer(self.screen)
-        
-        # 仿真参数
-        self.simulation_dt = 0.1
     
-    def handle_events(self, traffic_manager):
-        """处理所有事件"""
+    def handle_events(self, env):
+        """处理所有事件。现在它需要env来访问traffic_manager。"""
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.running = False
-            elif self.input_handler.handle_event(event, self.camera, traffic_manager):
-                self.running = False  # 输入处理器请求退出
+            # 将env.traffic_manager传递给输入处理器
+            elif self.input_handler.handle_event(event, self.camera, env.traffic_manager):
+                self.running = False
     
-    def update(self, traffic_manager):
-        """更新游戏状态"""
-        if not self.input_handler.paused:
-            traffic_manager.update(self.simulation_dt)
-    
-    def render(self, road, traffic_manager):
-        """渲染一帧"""
+    def render(self, env):
+        """渲染一帧。它从env获取所有需要绘制的对象。"""
+        # 从env获取road和traffic_manager
+        road = env.road
+        traffic_manager = env.traffic_manager
         self.renderer.render_frame(road, traffic_manager, self.camera, self.input_handler)
         pygame.display.flip()
     
-    def run_frame(self, road, traffic_manager):
-        """运行一帧"""
-        self.handle_events(traffic_manager)
-        self.update(traffic_manager)
-        self.render(road, traffic_manager)
-        self.clock.tick(self.fps)
-    
     def is_running(self):
-        """检查游戏是否在运行"""
         return self.running
     
+    def tick(self):
+        """控制帧率。"""
+        self.clock.tick(self.fps)
+    
     def quit(self):
-        """退出游戏"""
         pygame.quit()

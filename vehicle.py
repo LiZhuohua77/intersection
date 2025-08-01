@@ -11,7 +11,7 @@ from longitudinal_planner import LongitudinalPlanner
 
 class Vehicle:
     """
-    一个独立的智能车辆代理。
+    人工车辆代理。
     它拥有自己的物理属性、状态、路径以及一套集成的规划器与控制器。
     """
     def __init__(self, road, start_direction, end_direction, vehicle_id):
@@ -78,6 +78,9 @@ class Vehicle:
         self.show_path_visualization = False
         self.show_debug = True
         self.show_bicycle_model = False
+
+        # 记录速度
+        self.speed_history = []
 
         self._initialize_speed_profile(all_vehicles=[])
 
@@ -199,10 +202,15 @@ class Vehicle:
         self._update_intersection_status()
         self._update_visual_feedback(target_speed)
         self._check_completion()
+        self.speed_history.append(self.get_current_speed())
 
     # --------------------------------------------------------------------------
     #  辅助方法 (Helper Methods)
     # --------------------------------------------------------------------------
+
+    def get_speed_history(self):
+        """返回车辆从仿真开始到现在的完整速度历史记录。"""
+        return self.speed_history
 
     def get_safe_stopping_distance(self):
         """根据当前速度动态计算安全停车距离（制动距离+车长缓冲）"""
@@ -521,3 +529,153 @@ class Vehicle:
 
     def toggle_path_visualization(self):
         self.show_path_visualization = not self.show_path_visualization
+
+class RLVehicle(Vehicle):
+    """
+    一个专门为强化学习设计的车辆代理。
+    它继承了Vehicle的所有物理特性，但其决策由外部RL算法通过step()方法驱动。
+    """
+    def __init__(self, road, start_direction, end_direction, vehicle_id):
+        # 1. 调用父类的构造函数，继承所有基本设置
+        super().__init__(road, start_direction, end_direction, vehicle_id)
+
+        # 2. 覆盖或禁用父类中与自主决策相关的组件
+        self.planner = None         # RL Agent不需要基于规则的规划器
+        self.pid_controller = None  # 纵向控制由RL Agent直接输出
+        self.mpc_controller = None  # 横向控制也由RL Agent直接输出
+        
+        # 3. 标识自己是RL Agent，并改变颜色以区分
+        self.is_rl_agent = True
+        self.color = (0, 100, 255)  # 蓝色，醒目
+        
+        # 用于判断episode是否结束的计时器
+        self.steps_since_spawn = 0
+        self.max_episode_steps = 1000 # 假设每个episode最多持续1000步
+
+    def get_observation(self, all_vehicles):
+        """
+        定义并返回当前环境的观测值(State)。
+        这是RL Agent做出决策的依据。一个好的观测空间设计至关重要。
+        """
+        # --- 示例观测空间设计 (您可以根据需求扩展) ---
+        
+        # 1. 自身状态 (Ego State) - 3个值
+        ego_state = [
+            self.state['vx'] / GIPPS_V_DESIRED, # 归一化速度
+            self.state['vy'] / 10.0,             # 归一化侧向速度
+            self.state['psi_dot'] / 2.0          # 归一化偏航角速度
+        ]
+
+        # 2. 相对于参考路径的状态 - 3个值
+        current_pos = np.array([self.state['x'], self.state['y']])
+        distances_to_path = np.linalg.norm(self.path_points_np - current_pos, axis=1)
+        current_path_index = np.argmin(distances_to_path)
+        
+        cross_track_error = distances_to_path[current_path_index]
+        
+        # 计算航向角误差
+        path_angle = self.reference_path[current_path_index][2]
+        heading_error = self.state['psi'] - path_angle
+        # 将误差标准化到-pi到pi
+        heading_error = (heading_error + np.pi) % (2 * np.pi) - np.pi
+
+        path_state = [
+            cross_track_error / self.road.lane_width, # 归一化横向误差
+            heading_error / np.pi,                    # 归一化航向角误差
+            self.get_current_longitudinal_pos() / self.path_distances[-1] # 路径完成度
+        ]
+        
+        # 3. 周围环境感知 (例如，简单的LIDAR) - 假设8个方向
+        # (这是一个简化的例子，实际中可能需要更复杂的传感器模型)
+        lidar_ranges = [20.0] * 8 # 默认最大距离20米
+        # (此处省略LIDAR的具体实现，仅作结构演示)
+
+        # 组合成一个扁平的向量
+        observation = np.array(ego_state + path_state + lidar_ranges, dtype=np.float32)
+        return observation
+
+    def calculate_reward(self, all_vehicles, terminated, truncated):
+        """
+        定义奖励函数。这是引导Agent学习的核心。
+        """
+        if terminated and not self.completed: # 如果是因为碰撞等原因终止
+            return -100.0 # 巨大的负奖励
+
+        if self.completed: # 成功到达终点
+            return 200.0 # 巨大的正奖励
+            
+        # 基础奖励设计
+        reward = 0.0
+        
+        # 1. 鼓励前进
+        reward += self.state['vx'] * 0.1
+        
+        # 2. 惩罚偏离路径
+        current_pos = np.array([self.state['x'], self.state['y']])
+        cross_track_error = np.min(np.linalg.norm(self.path_points_np - current_pos, axis=1))
+        reward -= cross_track_error * 0.5
+        
+        # 3. 惩罚不舒适的驾驶 (高加速度或高转向)
+        # (需要记录上一帧的动作，此处简化)
+        
+        return reward
+
+    def step(self, action, dt, all_vehicles):
+        """
+        RL Agent的核心函数，遵循Gymnasium的step API。
+        接收一个动作，执行它，然后返回 (observation, reward, terminated, truncated, info)。
+        """
+        self.steps_since_spawn += 1
+        
+        # 1. 解读并执行动作
+        # 假设 'action' 是一个归一化到[-1, 1]的2元素数组: [加速度, 转向角]
+        # 您需要将归一化的动作映射到真实的物理值
+        acceleration = action[0] * self.m * 2.0 # 映射到纵向力 (Fx)
+        steering_angle = action[1] * np.deg2rad(30) # 映射到最大30度的转向角
+
+        self._update_physics(acceleration, steering_angle, dt)
+        self.last_steering_angle = steering_angle # 记录转向角用于绘图
+
+        # 更新车辆在路网中的状态
+        self._update_intersection_status()
+        self._check_completion()
+        self.speed_history.append(self.get_current_speed())
+
+        # 2. 检查终止条件
+        # a. 到达终点 (成功)
+        terminated = self.completed
+        # b. 发生碰撞 (失败)
+        # (需要一个碰撞检测函数，此处简化)
+        collision = False # placeholder for collision_check(self, all_vehicles)
+        if collision:
+            terminated = True
+        # c. 超出时间限制
+        truncated = self.steps_since_spawn >= self.max_episode_steps
+
+        # 3. 计算奖励和新的观测值
+        reward = self.calculate_reward(all_vehicles, terminated, truncated)
+        observation = self.get_observation(all_vehicles)
+        info = {} # 用于调试的额外信息
+
+        return observation, reward, terminated, truncated, info
+
+    def update(self, dt, all_vehicles, traffic_manager=None):
+        """
+        对于RL Agent，这个函数被架空了。
+        它的所有逻辑都在step()中，由外部的RL算法循环来驱动。
+        """
+        # 保留此函数是为了与普通Vehicle对象在主循环中保持接口一致
+        # 但它内部不执行任何决策
+        pass
+
+    def reset(self):
+        """
+        重置Agent到初始状态，用于开始一个新的episode。
+        这个函数需要您根据仿真逻辑来具体实现，可能包括：
+        - 重置车辆位置、速度等状态
+        - 清空历史记录
+        - 返回第一个观测值
+        """
+        # ... 实现重置逻辑 ...
+        print("RL Agent has been reset.")
+        # return self.get_observation(all_vehicles)

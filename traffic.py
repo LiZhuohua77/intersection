@@ -3,16 +3,17 @@
 import random
 import time
 import numpy as np
-from vehicle import Vehicle
+from vehicle import Vehicle, RLVehicle
 
 class TrafficManager:
     """交通流量管理器"""
     
-    def __init__(self, road, max_vehicles=20):
+    def __init__(self, road, max_vehicles=2):
         self.road = road
         self.vehicles = []
         self.max_vehicles = max_vehicles
         self.vehicle_id_counter = 1
+        self.completed_vehicles_data = []
         
 
         # 交通流量参数
@@ -132,20 +133,39 @@ class TrafficManager:
             print(f"无法生成车辆: {e}")
             return None
 
-
-    def update(self, dt):
-        """更新交通管理器"""
+    def spawn_rl_agent(self, start_direction, end_direction):
+        """专门生成并返回一个RL Agent实例。"""
+        # 在生成RL Agent前，最好清空环境，确保一个干净的开始
+        self.clear_all_vehicles()
+        try:
+            # 使用 RLVehicle 类来创建 agent
+            agent = RLVehicle(self.road, start_direction, end_direction, "RL_AGENT")
+            self.vehicles.append(agent)
+            # self.vehicle_id_counter += 1 # Agent ID是固定的，不需要增加计数器
+            print(f"生成强化学习Agent: 从 {start_direction} 到 {end_direction}")
+            return agent
+        except ValueError as e:
+            print(f"无法生成RL Agent: {e}")
+            return None
+        
+    def update_background_traffic(self, dt):
+        """更新背景交通"""
         directions = ['north', 'south', 'east', 'west']
-        for direction in directions:
-            if random.random() < 0.1: # 降低生成频率以观察单个车辆
-                self.spawn_vehicle(direction)
+        if random.random() < 0.1: 
+            self.spawn_vehicle(random.choice(directions))
         
         # 更新所有车辆
         for vehicle in self.vehicles[:]:
-            vehicle.update(dt, self.vehicles, self)
+            if not getattr(vehicle, 'is_rl_agent', False):
+                vehicle.update(dt, self.vehicles, self)
             
             if vehicle.completed:
                 print(f"车辆 #{vehicle.vehicle_id} 已完成路径")
+                self.completed_vehicles_data.append({
+                    'id': vehicle.vehicle_id,
+                    'type': 'background',
+                    'history': vehicle.get_speed_history()
+                })
                 self.vehicles.remove(vehicle)
     
     def get_traffic_stats(self):
