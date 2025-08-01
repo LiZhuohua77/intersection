@@ -14,7 +14,7 @@ def main():
     game_engine = GameEngine(width=800, height=800)
     
     # 重置环境，获取初始状态
-    observation, info = env.reset()
+    observation, info = env.reset(options={'scenario': 'protected_left_turn'})
     
     try:
         while game_engine.is_running():
@@ -42,7 +42,7 @@ def main():
                         plt.show()
 
                     print("重置环境中...")
-                    observation, info = env.reset()
+                    observation, info = env.reset(options={'scenario': 'protected_left_turn'})
 
             # (3) 视图: 渲染当前模型状态
             game_engine.render(env)

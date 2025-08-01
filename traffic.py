@@ -14,6 +14,8 @@ class TrafficManager:
         self.max_vehicles = max_vehicles
         self.vehicle_id_counter = 1
         self.completed_vehicles_data = []
+        self.current_pattern = 'normal'
+        self.current_scenario = 'random'
         
 
         # 交通流量参数
@@ -150,9 +152,10 @@ class TrafficManager:
         
     def update_background_traffic(self, dt):
         """更新背景交通"""
-        directions = ['north', 'south', 'east', 'west']
-        if random.random() < 0.1: 
-            self.spawn_vehicle(random.choice(directions))
+        if self.current_scenario == "random":
+            directions = ['north', 'south', 'east', 'west']
+            if random.random() < 0.1: 
+                self.spawn_vehicle(random.choice(directions))
         
         # 更新所有车辆
         for vehicle in self.vehicles[:]:
@@ -210,27 +213,52 @@ class TrafficManager:
             text_surface = font.render(text, True, color)
             surface.blit(text_surface, (10, 40 + i * 20))
             
-    def create_test_scenario(self):
+    def setup_scenario(self, scenario_name="random"):
         """
-        创建特定的测试场景：两辆车同时生成，一辆从南到北，另一辆从东到西
+        设置一个特定的实验场景。
         
-        Returns:
-            tuple: (南北车辆, 东西车辆) - 用于后续观察和调试
+        Args:
+            scenario_name (str): 预定义的场景名称。
         """
-        # 首先清空当前所有车辆，确保测试环境干净
         self.clear_all_vehicles()
-        
-        # 创建南到北的车辆
-        south_to_north_vehicle = Vehicle(self.road, 'south', 'west', self.vehicle_id_counter)
-        self.vehicles.append(south_to_north_vehicle)
-        self.vehicle_id_counter += 1
-        print(f"测试场景: 生成车辆 #{south_to_north_vehicle.vehicle_id} - 从南向西行驶")
+        self.current_scenario = scenario_name
+        print(f"--- Setting up scenario: {scenario_name} ---")
 
-        # 创建东到西的车辆
-        east_to_west_vehicle = Vehicle(self.road, 'west', 'east', self.vehicle_id_counter)
-        self.vehicles.append(east_to_west_vehicle)
-        self.vehicle_id_counter += 1
-        print(f"测试场景: 生成车辆 #{east_to_west_vehicle.vehicle_id} - 从东向西行驶")
+        agent = None
+
+        if scenario_name == "protected_left_turn":
+            # 场景：Agent从南向西左转，需要让行北向南直行的背景车
+            agent = self.spawn_rl_agent('south', 'west')
+            # 生成一辆有路权优势的背景车
+            bg_vehicle = Vehicle(self.road, 'north', 'south', self.vehicle_id_counter)
+            self.vehicles.append(bg_vehicle)
+            self.vehicle_id_counter += 1
+            print(f"背景车辆 #{bg_vehicle.vehicle_id}: 从北向南直行")
+
+        elif scenario_name == "unprotected_left_turn":
+            # 场景：Agent从南向西左转，北向东左转的背景车需要让行Agent
+            agent = self.spawn_rl_agent('south', 'west')
+            # 生成一辆路权劣势的背景车
+            bg_vehicle = Vehicle(self.road, 'north', 'east', self.vehicle_id_counter)
+            self.vehicles.append(bg_vehicle)
+            self.vehicle_id_counter += 1
+            print(f"背景车辆 #{bg_vehicle.vehicle_id}: 从北向东左转")
+
+        elif scenario_name == "head_on_conflict":
+             # 场景：Agent从南向西左转，对向车辆从北向东也左转，测试博弈
+            agent = self.spawn_rl_agent('south', 'west')
+            bg_vehicle = Vehicle(self.road, 'north', 'east', self.vehicle_id_counter)
+            self.vehicles.append(bg_vehicle)
+            self.vehicle_id_counter += 1
+            print(f"背景车辆 #{bg_vehicle.vehicle_id}: 从北向东左转")
+
+        elif scenario_name == "agent_only":
+            # 场景：只有Agent，用于测试基本路径跟踪性能
+            agent = self.spawn_rl_agent('south', 'north')
+
+        else: # 默认是随机交通流
+            # 如果是随机，我们只生成Agent，背景车会在后续的step中随机生成
+            agent = self.spawn_rl_agent('south', 'north')
+            print("默认场景：仅生成Agent，背景交通将随机出现。")
         
-        # 为了便于后续调试，返回这两辆车的引用
-        return south_to_north_vehicle, east_to_west_vehicle
+        return agent

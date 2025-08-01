@@ -30,19 +30,19 @@ class TrafficEnv(gym.Env):
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(observation_dim,), dtype=np.float32)
 
     def reset(self, seed=None, options=None):
-        """重置环境，返回初始观测值。"""
+        """重置环境到初始状态，可以根据options设置特定场景。"""
         super().reset(seed=seed)
         
-        self.traffic_manager.vehicle_id_counter = 1
-        self.traffic_manager.clear_all_vehicles()
+        # 从options字典中获取场景名称，如果没有则默认为"random"
+        scenario = options.get("scenario", "random") if options else "random"
         
-        start_dir, end_dir = 'south', 'north'
-        self.rl_agent = self.traffic_manager.spawn_rl_agent(start_dir, end_dir)
+        self.traffic_manager.vehicle_id_counter = 1
+        
+        # 使用新的方法来设置场景并生成Agent
+        self.rl_agent = self.traffic_manager.setup_scenario(scenario)
         
         if self.rl_agent is None:
-            raise RuntimeError("环境重置失败：无法生成RL Agent。")
-            
-        self.traffic_manager.spawn_vehicle('west')
+            raise RuntimeError(f"环境重置失败：无法在场景'{scenario}'中生成RL Agent。")
 
         observation = self.rl_agent.get_observation(self.traffic_manager.vehicles)
         info = self._get_info()
