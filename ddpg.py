@@ -11,7 +11,7 @@ from collections import deque
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {DEVICE}")
 
-ENV_NAME = 'Pendulum-v1'
+ENV_NAME = 'Intersection'
 BUFFER_SIZE = 100000     # 经验回放池大小
 BATCH_SIZE = 128         # 批处理大小
 GAMMA = 0.99             # 折扣因子
@@ -94,8 +94,11 @@ class Critic(nn.Module):
 
 # --- DDPG Agent ---
 class DDPGAgent():
-    def __init__(self, state_dim, action_dim, action_high):
+    def __init__(self, state_dim, action_dim, action_high, writer=None):
         self.replay_buffer = ReplayBuffer(BUFFER_SIZE, BATCH_SIZE)
+
+        self.writer = writer
+        self.learn_step_counter = 0
 
         # 创建 Actor 网络和其目标网络
         self.actor_local = Actor(state_dim, action_dim, action_high).to(DEVICE)
@@ -186,6 +189,12 @@ class DDPGAgent():
         self.soft_update(self.critic_local, self.critic_target, TAU)
         self.soft_update(self.actor_local, self.actor_target, TAU)
 
+        if self.writer:
+            self.writer.add_scalar('Loss/Critic_Loss', critic_loss.item(), self.learn_step_counter)
+            self.writer.add_scalar('Loss/Actor_Loss', actor_loss.item(), self.learn_step_counter)
+            self.writer.add_scalar('Value/Mean_Q_Value', Q_expected.mean().item(), self.learn_step_counter)
+        
+        self.learn_step_counter += 1 
 
     def soft_update(self, local_model, target_model, tau):
         """
@@ -203,3 +212,24 @@ class DDPGAgent():
             'critic_optimizer_state_dict': self.critic_optimizer.state_dict()
         }, filename)
         print(f"模型已保存到 {filename}")
+
+    def load_model(self, filename):
+        """从文件加载模型参数"""
+        try:
+            checkpoint = torch.load(filename, map_location=DEVICE)
+            self.actor_local.load_state_dict(checkpoint['actor_state_dict'])
+            self.critic_local.load_state_dict(checkpoint['critic_state_dict'])
+            
+            # 目标网络也需要加载，以确保一致性
+            self.actor_target.load_state_dict(checkpoint['actor_state_dict'])
+            self.critic_target.load_state_dict(checkpoint['critic_state_dict'])
+            
+            # 优化器状态也可以选择性加载，以便继续训练
+            # self.actor_optimizer.load_state_dict(checkpoint['actor_optimizer_state_dict'])
+            # self.critic_optimizer.load_state_dict(checkpoint['critic_optimizer_state_dict'])
+            
+            print(f"模型已从 {filename} 加载")
+        except FileNotFoundError:
+            print(f"错误: 找不到模型文件 {filename}")
+        except Exception as e:
+            print(f"加载模型时发生错误: {e}")

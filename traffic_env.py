@@ -26,7 +26,7 @@ class TrafficEnv(gym.Env):
 
         # 2. 定义动作和观测空间
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
-        observation_dim = 14 
+        observation_dim = 26 
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(observation_dim,), dtype=np.float32)
 
     def reset(self, seed=None, options=None):

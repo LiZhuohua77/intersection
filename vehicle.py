@@ -7,6 +7,7 @@ from config import *
 from longitudinal_control import PIDController
 from lateral_control import MPCController
 from longitudinal_planner import LongitudinalPlanner
+from utils import check_obb_collision
 
 
 class Vehicle:
@@ -363,26 +364,40 @@ class Vehicle:
 
 
     def _update_physics(self, fx_total, delta, dt):
-        """物理引擎，与上一版相同"""
+        """物理引擎，增加了低速保护。"""
         psi, vx, vy, psi_dot = self.state['psi'], self.state['vx'], self.state['vy'], self.state['psi_dot']
-        if abs(vx) < 0.1: vx = np.sign(vx) * 0.1
         
-        alpha_f = np.arctan((vy + self.lf * psi_dot) / vx) - delta
-        alpha_r = np.arctan((vy - self.lr * psi_dot) / vx)
-
-        Fyf = -self.Cf * alpha_f
-        Fyr = -self.Cr * alpha_r
+        # 当车辆速度非常低时，我们简化模型以避免除零错误和数值不稳定
+        if abs(vx) < LOW_SPEED_THRESHOLD:
+            # 在低速时，我们假设没有轮胎侧偏，因此没有侧向力
+            alpha_f = 0.0
+            alpha_r = 0.0
+            Fyf = 0.0
+            Fyr = 0.0
+        else:
+            # 速度足够时，正常使用自行车模型
+            alpha_f = np.arctan((vy + self.lf * psi_dot) / vx) - delta
+            alpha_r = np.arctan((vy - self.lr * psi_dot) / vx)
+            Fyf = -self.Cf * alpha_f
+            Fyr = -self.Cr * alpha_r
         
+        # 动力学方程保持不变
         ax = fx_total / self.m
-        ay = (Fyf + Fyr) / self.m - vx * psi_dot
+        # 注意：这里的 vx 应该用原始的 vx，而不是经过阈值判断的 vx，以正确计算离心力
+        original_vx = self.state['vx']
+        ay = (Fyf + Fyr) / self.m - original_vx * psi_dot 
         psi_ddot_deriv = (self.lf * Fyf - self.lr * Fyr) / self.Iz
         
+        # 积分更新状态
         self.state['vx'] += ax * dt
         self.state['vy'] += ay * dt
         self.state['psi_dot'] += psi_ddot_deriv * dt
         
-        self.state['x'] += (vx * np.cos(psi) - vy * np.sin(psi)) * dt
-        self.state['y'] += (vx * np.sin(psi) + vy * np.cos(psi)) * dt
+        # 更新位置和姿态
+        # 这里的 vx 和 vy 应该用更新前的，或者用更新后的值的平均，以提高精度 (欧拉积分)
+        # 为简单起见，我们使用更新前的值
+        self.state['x'] += (original_vx * np.cos(psi) - vy * np.sin(psi)) * dt
+        self.state['y'] += (original_vx * np.sin(psi) + vy * np.cos(psi)) * dt
         self.state['psi'] += psi_dot * dt
         
     def draw(self, surface, transform_func, small_font, scale=1.0):
@@ -530,152 +545,204 @@ class Vehicle:
     def toggle_path_visualization(self):
         self.show_path_visualization = not self.show_path_visualization
 
+
 class RLVehicle(Vehicle):
     """
-    一个专门为强化学习设计的车辆代理。
-    它继承了Vehicle的所有物理特性，但其决策由外部RL算法通过step()方法驱动。
+    一个专门为强化学习设计的车辆代理 (根据您的需求重构)。
     """
     def __init__(self, road, start_direction, end_direction, vehicle_id):
-        # 1. 调用父类的构造函数，继承所有基本设置
         super().__init__(road, start_direction, end_direction, vehicle_id)
-
-        # 2. 覆盖或禁用父类中与自主决策相关的组件
-        self.planner = None         # RL Agent不需要基于规则的规划器
-        self.pid_controller = None  # 纵向控制由RL Agent直接输出
-        self.mpc_controller = None  # 横向控制也由RL Agent直接输出
         
-        # 3. 标识自己是RL Agent，并改变颜色以区分
+        # 禁用基于规则的控制器
+        self.planner = None
+        self.pid_controller = None
+        self.mpc_controller = None
+        
+        # RL Agent特定属性
         self.is_rl_agent = True
-        self.color = (0, 100, 255)  # 蓝色，醒目
+        self.color = (0, 100, 255) # 蓝色
         
-        # 用于判断episode是否结束的计时器
+        # 用于计算奖励和判断超时的状态
         self.steps_since_spawn = 0
-        self.max_episode_steps = 1000 # 假设每个episode最多持续1000步
+        self.max_episode_steps = 1500 
+        self.last_longitudinal_pos = self.get_current_longitudinal_pos()
+        self.last_action = np.array([0.0, 0.0]) # 上一帧的动作，用于计算平滑度
 
     def get_observation(self, all_vehicles):
         """
-        定义并返回当前环境的观测值(State)。
-        这是RL Agent做出决策的依据。一个好的观测空间设计至关重要。
+        根据您的要求，构建观测空间。
+        观测空间 = 自身状态 + 周围车辆状态 (固定长度)
         """
-        # --- 示例观测空间设计 (您可以根据需求扩展) ---
+        # --- 1. 自身状态 (Ego Vehicle State) ---
+        # 速度 (vx, vy), 航向角速度 (psi_dot), 横向/航向误差, 路径完成度
+        ego_vx_norm = self.state['vx'] / GIPPS_V_DESIRED
+        ego_vy_norm = self.state['vy'] / 5.0 # 假设侧向速度通常在±5内
+        ego_psi_dot_norm = self.state['psi_dot'] / 2.0 # 假设角速度通常在±2 rad/s内
         
-        # 1. 自身状态 (Ego State) - 3个值
-        ego_state = [
-            self.state['vx'] / GIPPS_V_DESIRED, # 归一化速度
-            self.state['vy'] / 10.0,             # 归一化侧向速度
-            self.state['psi_dot'] / 2.0          # 归一化偏航角速度
-        ]
-
-        # 2. 相对于参考路径的状态 - 3个值
         current_pos = np.array([self.state['x'], self.state['y']])
         distances_to_path = np.linalg.norm(self.path_points_np - current_pos, axis=1)
         current_path_index = np.argmin(distances_to_path)
-        
         cross_track_error = distances_to_path[current_path_index]
-        
-        # 计算航向角误差
         path_angle = self.reference_path[current_path_index][2]
-        heading_error = self.state['psi'] - path_angle
-        # 将误差标准化到-pi到pi
-        heading_error = (heading_error + np.pi) % (2 * np.pi) - np.pi
+        heading_error = (self.state['psi'] - path_angle + np.pi) % (2 * np.pi) - np.pi
 
         path_state = [
-            cross_track_error / self.road.lane_width, # 归一化横向误差
-            heading_error / np.pi,                    # 归一化航向角误差
+            cross_track_error / (self.road.lane_width * 2), # 归一化横向误差
+            heading_error / np.pi,                         # 归一化航向角误差
             self.get_current_longitudinal_pos() / self.path_distances[-1] # 路径完成度
         ]
         
-        # 3. 周围环境感知 (例如，简单的LIDAR) - 假设8个方向
-        # (这是一个简化的例子，实际中可能需要更复杂的传感器模型)
-        lidar_ranges = [20.0] * 8 # 默认最大距离20米
-        # (此处省略LIDAR的具体实现，仅作结构演示)
+        ego_observation = [ego_vx_norm, ego_vy_norm, ego_psi_dot_norm] + path_state
 
-        # 组合成一个扁平的向量
-        observation = np.array(ego_state + path_state + lidar_ranges, dtype=np.float32)
+        # --- 2. 周围车辆状态 (Surrounding Vehicles State) ---
+        surrounding_obs = self._get_surrounding_vehicles_observation(all_vehicles)
+
+        # --- 3. 组合成最终的扁平化向量 ---
+        # 6 (ego) + 5*4 (surrounding) = 26 个值
+        observation = np.array(ego_observation + surrounding_obs, dtype=np.float32)
         return observation
 
-    def calculate_reward(self, all_vehicles, terminated, truncated):
-        """
-        定义奖励函数。这是引导Agent学习的核心。
-        """
-        if terminated and not self.completed: # 如果是因为碰撞等原因终止
-            return -100.0 # 巨大的负奖励
-
-        if self.completed: # 成功到达终点
-            return 200.0 # 巨大的正奖励
+    def _get_surrounding_vehicles_observation(self, all_vehicles):
+        """获取周围N辆最近的车辆的相对状态，并进行归一化。"""
+        ego_pos = np.array([self.state['x'], self.state['y']])
+        ego_vel = np.array([self.state['vx'], self.state['vy']])
+        
+        neighbors = []
+        for v in all_vehicles:
+            if v.vehicle_id == self.vehicle_id:
+                continue
             
-        # 基础奖励设计
+            other_pos = np.array([v.state['x'], v.state['y']])
+            dist = np.linalg.norm(ego_pos - other_pos)
+
+            if dist < OBSERVATION_RADIUS:
+                other_vel = np.array([v.state['vx'], v.state['vy']])
+                # 计算相对位置和速度
+                relative_pos = other_pos - ego_pos
+                relative_vel = other_vel - ego_vel
+                neighbors.append((dist, relative_pos[0], relative_pos[1], relative_vel[0], relative_vel[1]))
+        
+        # 按距离排序，只取最近的N辆车
+        neighbors.sort(key=lambda x: x[0])
+        neighbors = neighbors[:NUM_OBSERVED_VEHICLES]
+        
+        # 构建观测向量
+        surrounding_obs_flat = []
+        for neighbor in neighbors:
+            # 归一化: [rel_x, rel_y, rel_vx, rel_vy]
+            surrounding_obs_flat.extend([
+                neighbor[1] / OBSERVATION_RADIUS,
+                neighbor[2] / OBSERVATION_RADIUS,
+                neighbor[3] / GIPPS_V_DESIRED,
+                neighbor[4] / GIPPS_V_DESIRED
+            ])
+            
+        # 如果车辆不足N辆，用0进行填充以保持观测向量长度固定
+        padding_len = NUM_OBSERVED_VEHICLES * 4 - len(surrounding_obs_flat)
+        if padding_len > 0:
+            surrounding_obs_flat.extend([0.0] * padding_len)
+            
+        return surrounding_obs_flat
+        
+    def calculate_reward(self, action, all_vehicles, terminated):
+        """根据您的四类要求，设计奖励函数。"""
+        
+        # --- 基础权重，这些是重要的超参数，需要仔细调整 ---
+        W_PROGRESS = 10.0    # 路径进展
+        W_CTE = -3.0        # 横向误差惩罚
+        W_ENERGY = 0     # 能量消耗惩罚
+        W_SMOOTH = 0     # 动作平滑度惩罚
+        W_SPEED_LIMIT = 0# 超速惩罚
+        R_SUCCESS = 300.0   # 成功到达终点
+        R_COLLISION = -500.0# 碰撞惩罚
+        
+        # 1. 安全类奖励 (Safety)
+        if self._check_collision(all_vehicles):
+            return R_COLLISION
+        if self.completed:
+            return R_SUCCESS
+
         reward = 0.0
+
+        # 2. 路径进展奖励 (Path Progress)
+        current_longitudinal_pos = self.get_current_longitudinal_pos()
+        progress = current_longitudinal_pos - self.last_longitudinal_pos
+        reward += progress * W_PROGRESS
         
-        # 1. 鼓励前进
-        reward += self.state['vx'] * 0.1
-        
-        # 2. 惩罚偏离路径
+        # 同时惩罚偏离路径
         current_pos = np.array([self.state['x'], self.state['y']])
         cross_track_error = np.min(np.linalg.norm(self.path_points_np - current_pos, axis=1))
-        reward -= cross_track_error * 0.5
+        reward += cross_track_error * W_CTE
+
+        # 3. 能量消耗奖励 (Energy/SOC) - 用动作的范数作为代理
+        energy_cost = np.linalg.norm(action) # action是归一化的[-1, 1]动作
+        reward += energy_cost * W_ENERGY
+
+        # 4. 平滑度奖励 (Smoothness) - 惩罚动作的剧烈变化
+        smoothness_cost = np.linalg.norm(action - self.last_action)
+        reward += smoothness_cost * W_SMOOTH
         
-        # 3. 惩罚不舒适的驾驶 (高加速度或高转向)
-        # (需要记录上一帧的动作，此处简化)
-        
+        # 附加项：我们之前讨论的超速惩罚
+        if self.state['vx'] > GIPPS_V_DESIRED:
+            reward += (self.state['vx'] - GIPPS_V_DESIRED) * W_SPEED_LIMIT
+
         return reward
 
+    def _check_collision(self, all_vehicles):
+        """
+        使用分离轴定理（SAT）来精确地检测OBB碰撞。
+        """
+        for v in all_vehicles:
+            if v.vehicle_id == self.vehicle_id:
+                continue
+            
+            # 调用我们新的OBB碰撞检测函数
+            if check_obb_collision(self, v):
+                print(f"!!! COLLISION DETECTED between {self.vehicle_id} and {v.vehicle_id} !!!")
+                return True                
+        return False
+
+        
     def step(self, action, dt, all_vehicles):
-        """
-        RL Agent的核心函数，遵循Gymnasium的step API。
-        接收一个动作，执行它，然后返回 (observation, reward, terminated, truncated, info)。
-        """
+        """RL Agent的核心函数。"""
         self.steps_since_spawn += 1
         
         # 1. 解读并执行动作
-        # 假设 'action' 是一个归一化到[-1, 1]的2元素数组: [加速度, 转向角]
-        # 您需要将归一化的动作映射到真实的物理值
-        acceleration = action[0] * self.m * 2.0 # 映射到纵向力 (Fx)
-        steering_angle = action[1] * np.deg2rad(30) # 映射到最大30度的转向角
+        # 将归一化的动作 [-1, 1] 映射到真实的物理值
+        acceleration = action[0] * MAX_ACCELERATION
+        steering_angle = action[1] * MAX_STEERING_ANGLE
+        
+        # 更新物理状态
+        longitudinal_force = acceleration * self.m
+        self._update_physics(longitudinal_force, steering_angle, dt)
+        
+        # 应用速度硬性限制作为安全保障
+        self.state['vx'] = max(0, min(self.state['vx'], GIPPS_V_DESIRED * 1.1)) # 允许稍微超过一点
 
-        self._update_physics(acceleration, steering_angle, dt)
-        self.last_steering_angle = steering_angle # 记录转向角用于绘图
-
-        # 更新车辆在路网中的状态
-        self._update_intersection_status()
-        self._check_completion()
+        # 记录用于下一次计算的变量
+        self.last_steering_angle = steering_angle
         self.speed_history.append(self.get_current_speed())
 
         # 2. 检查终止条件
-        # a. 到达终点 (成功)
-        terminated = self.completed
-        # b. 发生碰撞 (失败)
-        # (需要一个碰撞检测函数，此处简化)
-        collision = False # placeholder for collision_check(self, all_vehicles)
-        if collision:
-            terminated = True
-        # c. 超出时间限制
+        self._check_completion()
+        terminated = self.completed or self._check_collision(all_vehicles)
         truncated = self.steps_since_spawn >= self.max_episode_steps
 
         # 3. 计算奖励和新的观测值
-        reward = self.calculate_reward(all_vehicles, terminated, truncated)
+        # 注意：奖励函数现在也需要action来计算平滑度
+        reward = self.calculate_reward(action, all_vehicles, terminated)
         observation = self.get_observation(all_vehicles)
-        info = {} # 用于调试的额外信息
+        
+        # 更新用于下次计算的"last"变量
+        self.last_longitudinal_pos = self.get_current_longitudinal_pos()
+        self.last_action = action
 
-        return observation, reward, terminated, truncated, info
-
-    def update(self, dt, all_vehicles, traffic_manager=None):
-        """
-        对于RL Agent，这个函数被架空了。
-        它的所有逻辑都在step()中，由外部的RL算法循环来驱动。
-        """
-        # 保留此函数是为了与普通Vehicle对象在主循环中保持接口一致
-        # 但它内部不执行任何决策
-        pass
+        return observation, reward, terminated, truncated, {} # info可以为空
 
     def reset(self):
-        """
-        重置Agent到初始状态，用于开始一个新的episode。
-        这个函数需要您根据仿真逻辑来具体实现，可能包括：
-        - 重置车辆位置、速度等状态
-        - 清空历史记录
-        - 返回第一个观测值
-        """
-        # ... 实现重置逻辑 ...
-        print("RL Agent has been reset.")
-        # return self.get_observation(all_vehicles)
+        """重置Agent的状态，用于开始新回合。"""
+        # 这个方法的具体实现依赖于环境的重置逻辑
+        # 但它内部应重置这些'last'变量
+        self.last_longitudinal_pos = self.get_current_longitudinal_pos()
+        self.last_action = np.array([0.0, 0.0])
+        self.steps_since_spawn = 0

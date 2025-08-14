@@ -16,6 +16,7 @@ VEHICLE_L = 5.0      # 车辆长度 (m)
 VEHICLE_IZ = 2500    # 绕Z轴的转动惯量 (kg*m^2)
 VEHICLE_CF = 80000   # 前轮侧偏刚度 (N/rad)
 VEHICLE_CR = 80000   # 后轮侧偏刚度 (N/rad)
+LOW_SPEED_THRESHOLD = 0.1 # m/s
 
 # PID 控制器参数
 PID_KP = 1000.0  # 比例增益 (将速度误差m/s转换为力N)
@@ -38,3 +39,9 @@ GIPPS_V_DESIRED = 15.0      # m/s, 期望速度 (~54 km/h)
 GIPPS_S0 = VEHICLE_L        # m, 车辆静止时的安全距离（等于车长）
 GIPPS_TAU = 1.0             # s, 驾驶员反应时间
 GIPPS_B_HAT = -3.0          # m/s^2, 对前车减速度的估计
+
+# agent参数
+MAX_ACCELERATION = 3.0  # agent可以输出的最大加速度 (m/s^2)
+MAX_STEERING_ANGLE = np.deg2rad(30) # agent可以输出的最大转向角 (弧度)
+OBSERVATION_RADIUS = 50.0 # 观测周围车辆的半径 (米)
+NUM_OBSERVED_VEHICLES = 5 # 最多观测周围5辆车
