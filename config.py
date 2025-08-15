@@ -1,4 +1,18 @@
-# config.py
+"""
+@file: config.py
+@description:
+该文件包含了整个强化学习仿真项目的所有全局配置参数和常量。
+通过修改此文件中的值，可以方便地调整仿真环境、车辆物理特性、控制器行为以及智能体（agent）的能力，
+而无需改动核心的仿真和控制逻辑代码。
+
+各参数块说明:
+- 仿真参数 (Simulation Parameters): 控制仿真器本身的基本设置，如时间步长和渲染窗口大小。
+- 车辆物理参数 (Vehicle Physical Parameters): 定义了车辆的动力学模型属性，这些是仿真真实性的基础。
+- PID 控制器参数 (PID Controller Parameters): 用于车辆纵向（速度）控制的PID控制器调优参数。
+- MPC 控制器参数 (MPC Controller Parameters): 用于车辆横向（路径跟踪）控制的模型预测控制器（MPC）调优参数。
+- Gipps 模型参数 (Gipps' Model Parameters): 定义了背景车辆（非Agent车辆）的行为，它们遵循Gipps跟驰模型。
+- Agent 参数 (Agent Parameters): 定义了强化学习智能体的行为约束和感知能力。
+"""
 
 import numpy as np
 

@@ -1,3 +1,42 @@
+"""
+@file: ddpg.py
+@description:
+该文件提供了深度确定性策略梯度 (DDPG) 算法的完整 PyTorch 实现。
+DDPG 是一种适用于连续动作空间的、无模型 (model-free)、离策略 (off-policy) 的强化学习算法，
+它结合了深度 Q 网络 (DQN) 和 Actor-Critic 方法的思想。
+
+该实现包含以下核心组件:
+
+1.  **超参数 (Hyperparameters):**
+    文件顶部集中定义了所有可调参数，如经验池大小、学习率、折扣因子、软更新系数等，
+    方便统一管理和调优。
+
+2.  **ReplayBuffer (经验回放池):**
+    一个标准的经验回放池类。它用于存储智能体与环境交互的经验元组 (state, action, reward, next_state, done)，
+    并通过随机采样小批量数据来打破经验之间的相关性，从而稳定训练过程。
+
+3.  **Actor (策略网络):**
+    一个神经网络，将状态 (state) 映射到一个确定的动作 (action)。它学习能够最大化预期回报的最优策略。
+    网络输出层使用 `tanh` 激活函数将动作缩放到 [-1, 1] 范围，再根据环境的实际动作范围进行调整。
+
+4.  **Critic (价值网络):**
+    一个神经网络，输入状态 (state) 和动作 (action)，输出对应的 Q 值 (预期的累积回报)。
+    它学习评估 Actor 网络所选择动作的优劣。
+
+5.  **DDPGAgent (DDPG 智能体):**
+    封装了 DDPG 算法核心逻辑的主类。它管理：
+    - 四个神经网络：一个 Actor 网络、一个 Critic 网络，以及它们各自对应的 Target 网络。
+      Target 网络是主网络的延迟更新副本，用于计算 TD-Target，极大地提高了学习的稳定性。
+    - 经验回放池 `ReplayBuffer` 的实例。
+    - 学习过程 (`learn` 方法)：根据从回放池中采样的经验来更新 Actor 和 Critic 网络。
+    - 与环境的交互 (`select_action`, `step` 方法)：负责选择动作并处理每一步的经验。
+    - 模型的保存与加载功能。
+
+算法训练流程:
+- Critic 网络通过最小化 TD 误差 (Mean Squared Error) 来更新，其 TD Target 是利用 Target 网络计算得出的。
+- Actor 网络通过策略梯度来更新，目标是使其输出的动作能获得 Critic 网络给出的更高 Q 值。
+- 两个 Target 网络通过“软更新” (Polyak Averaging) 方式缓慢地追踪主网络的参数。
+"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

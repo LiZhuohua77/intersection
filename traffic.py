@@ -1,4 +1,39 @@
-# traffic.py
+"""
+@file: traffic.py
+@description:
+该文件定义了 `TrafficManager` 类，作为仿真世界中的“交通指挥官”。它全面负责
+所有车辆（包括RL智能体和背景车辆）的生命周期管理、控制整体交通流的动态变化，
+以及搭建用于训练和评估的特定交通场景。
+
+核心职责:
+
+1.  **车辆生命周期管理 (Vehicle Lifecycle Management):**
+    - **生成 (Spawning):** 提供了 `spawn_vehicle` (用于背景NPC车辆) 和 `spawn_rl_agent`
+      (用于RL智能体) 两个核心方法。车辆的生成受到严格的条件检查 (`can_spawn_vehicle`)，
+      包括时间间隔、场景车辆总数限制以及出生点是否被占用，以防止不合理的生成。
+    - **更新 (Updating):** `update_background_traffic` 方法在每个仿真步被调用，负责
+      遍历并调用每个背景车辆自身的 `update` 方法，从而驱动它们的行为和决策逻辑。
+    - **移除 (Removing):** 实时监控车辆状态，当车辆完成其预定路径后 (`vehicle.completed`)，
+      会将其从活动车辆列表中安全移除，并可选择性地记录其行驶数据。
+
+2.  **交通流控制 (Traffic Flow Control):**
+    - **流量模式 (Patterns):** 内置了多种预设的交通流量模式（如 `rush_hour`, `normal`,
+      `light`），可以通过 `set_traffic_pattern` 方法切换，动态调整背景车辆的生成
+      频率，从而改变仿真环境的整体难度。
+    - **转向行为 (Turning Behavior):** 通过 `turn_probabilities` 定义了从不同方向驶入的
+      车辆选择直行、左转或右转的概率分布，使得交通流的行为更加真实和多样化。
+
+3.  **场景搭建器 (Scenario Builder):**
+    - 核心方法 `setup_scenario` 扮演着“场景工厂”的角色。它被 `TrafficEnv` 在每回合
+      重置时调用，能够根据传入的场景名称 (`scenario_name`)，精确地布置RL智能体和
+      一或多辆背景车辆的初始位置和行驶路线。
+    - 这个功能是实现结构化、可复现实验的关键，能够创造出特定的、有针对性的挑战，
+      例如“无保护左转”、“与直行车冲突”等，对于强化学习的训练和评估至关重要。
+
+4.  **状态监控与调试:**
+    - 提供了 `get_traffic_stats` 和 `draw_debug_info` 等辅助方法，用于在仿真过程中
+      实时统计和显示交通信息（如车辆总数、平均速度等），为调试和分析提供便利。
+"""
 
 import random
 import time

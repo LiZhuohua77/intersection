@@ -1,4 +1,40 @@
-# train.py
+"""
+@file: train.py
+@description:
+该文件是强化学习智能体的**主训练脚本**。
+它负责编排整个训练流程：初始化环境和DDPG智能体，然后在多个回合（episodes）中
+进行交互、学习和更新，最后保存训练好的模型并可视化训练结果。
+此脚本通常在无图形界面的服务器或后台运行，以最大化训练效率。
+
+核心流程:
+
+1.  **初始化 (Initialization):**
+    - 设置 `TensorBoard` 的 `SummaryWriter`，用于记录和可视化训练过程中的关键指标
+      （如奖励、损失函数等）。
+    - 在**无渲染模式**下创建 `TrafficEnv` 环境，以加速训练。
+    - 根据环境的观测和动作空间维度，初始化 `DDPGAgent`。
+
+2.  **训练主循环 (Main Training Loop):**
+    - 包含一个外层的回合循环（episodes）和一个内层的步数循环（steps）。
+    - 在循环中执行标准的强化学习交互流程：
+        a. 智能体根据当前状态选择一个带探索噪声的动作 (`agent.select_action`)。
+        b. 环境执行该动作并返回结果 (`env.step`)。
+        c. 将这次交互的完整经验 `(s, a, r, s', done)` 存入智能体的经验回放池并
+           触发学习过程 (`agent.step`)。
+
+3.  **日志与监控 (Logging and Monitoring):**
+    - 每个回合结束后，将该回合的总奖励记录到 `TensorBoard` 中。
+    - 可以在终端通过 `tensorboard --logdir=runs` 命令来实时监控智能体的学习曲线，
+      判断训练是否收敛。
+
+4.  **模型保存 (Model Checkpointing):**
+    - 训练过程中会周期性地（例如每50个回合）调用 `agent.save_model()` 来保存当前
+      的模型权重。这对于断点续训和后续的模型评估至关重要。
+
+5.  **结果可视化 (Result Visualization):**
+    - 全部训练结束后，脚本会使用 `matplotlib` 绘制整个训练过程中的奖励变化曲线，
+      并将其保存为图片，为最终的训练效果提供一个直观的总结。
+"""
 
 import gymnasium as gym
 import numpy as np
