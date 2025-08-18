@@ -38,6 +38,7 @@
   `RLVehicle` 类在每个 `step` 中调用，以确定是否发生了碰撞。碰撞是RL环境中一个
   关键的终止条件，并且是奖励函数中一个非常重要的、带有巨大负反馈的事件。
 """
+import numpy as np
 def _get_obb_corners(vehicle):
     """获取车辆的有向边界框（OBB）的四个角点坐标。"""
     x, y, psi = vehicle.state['x'], vehicle.state['y'], vehicle.state['psi']

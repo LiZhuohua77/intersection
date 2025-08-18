@@ -24,6 +24,7 @@
           高级车辆控制器稳定跟踪至关重要。
         - **角度重计算 (Angle Recalculation):** 为平滑路径上的每一个点计算出精确的
           切线方向（即车辆朝向）。
+    - **边界生成**: 同时为每条路径生成对应的平滑车道边界，用于碰撞检测和奖励函数设计。
     - 所有生成并处理完毕的路径都会被缓存，以避免重复计算，确保高效运行。
 
 3.  **冲突管理:**
@@ -86,6 +87,74 @@ class Road:
         self.extended_conflict_zone = self.conflict_zone.inflate(2 * safe_stopping_distance, 2 * safe_stopping_distance)
 
         self.conflict_matrix = CONFLICT_MATRIX
+
+        self._pre_generate_all_routes()
+
+    def _calculate_offset_points(self, points, offset_distance):
+        """根据中心线点和偏移距离，计算平行线点。"""
+        offset_points = []
+        points_np = np.array(points, dtype=float)
+        
+        # 计算每段的方向向量
+        vectors = np.diff(points_np, axis=0)
+        # 计算法向量
+        normals = np.array([-vectors[:, 1], vectors[:, 0]]).T
+        # 归一化法向量
+        norms = np.linalg.norm(normals, axis=1)
+        normals /= norms[:, np.newaxis]
+        
+        # 为第一个点计算法线（使用第一段的法线）
+        offset_points.append(points_np[0] + normals[0] * offset_distance)
+        
+        # 为中间点计算法线（使用前后两段法线的平均值，以平滑拐角）
+        for i in range(len(normals) - 1):
+            avg_normal = (normals[i] + normals[i+1]) / 2
+            avg_normal /= np.linalg.norm(avg_normal)
+            offset_points.append(points_np[i+1] + avg_normal * offset_distance)
+            
+        # 为最后一个点计算法线（使用最后一段的法线）
+        offset_points.append(points_np[-1] + normals[-1] * offset_distance)
+        
+        return offset_points
+
+    def _generate_and_process_boundaries(self, raw_centerline):
+        """根据原始中心线，生成并处理左右边界。"""
+        if len(raw_centerline) < 2:
+            return [], []
+
+        half_lane_width = self.lane_width / 2
+        
+        # 1. 计算原始边界点
+        raw_left_boundary = self._calculate_offset_points(raw_centerline, half_lane_width)
+        raw_right_boundary = self._calculate_offset_points(raw_centerline, -half_lane_width)
+        
+        # 2. 对边界进行与中心线相同的平滑和重采样处理
+        smoothed_left = smooth_path(raw_left_boundary, alpha=0.3, beta=0.5, iterations=100)
+        resampled_left = resample_path(smoothed_left, segment_length=0.5)
+        
+        smoothed_right = smooth_path(raw_right_boundary, alpha=0.3, beta=0.5, iterations=100)
+        resampled_right = resample_path(smoothed_right, segment_length=0.5)
+        
+        return resampled_left, resampled_right
+
+    def draw_boundaries(self, surface, transform_func=None):
+        """(调试用) 绘制所有已生成路径的逻辑车道边界。"""
+        if transform_func is None:
+            transform_func = lambda x, y: (x, y)
+        
+        for route_key, route_data in self.routes.items():
+            if "boundaries" in route_data:
+                left_boundary = route_data["boundaries"]["left"]
+                right_boundary = route_data["boundaries"]["right"]
+                
+                if len(left_boundary) > 1:
+                    transformed_left = [transform_func(p[0], p[1]) for p in left_boundary]
+                    pygame.draw.lines(surface, (150, 150, 255, 100), False, transformed_left, 5) #淡蓝色
+                
+                if len(right_boundary) > 1:
+                    transformed_right = [transform_func(p[0], p[1]) for p in right_boundary]
+                    pygame.draw.lines(surface, (150, 150, 255, 100), False, transformed_right, 5) #淡蓝色
+
 
     def draw_conflict_zones(self, surface, transform_func=None):
         """可视化交叉口的核心冲突区和扩展感知区"""
@@ -741,11 +810,18 @@ class Road:
         # --- 平滑+重采样流程 ---
         smoothed_xy = smooth_path(xy_points, alpha=0.3, beta=0.5, iterations=100)
         resampled_xy = resample_path(smoothed_xy, segment_length=0.5)
-        final_points = recalculate_angles(resampled_xy)
-        
+        final_points_with_angle = recalculate_angles(resampled_xy)
+
+        left_boundary, right_boundary = self._generate_and_process_boundaries(filtered_points)
+
+
         result = {
             "raw": filtered_points,
-            "smoothed": final_points
+            "smoothed": final_points_with_angle,
+            "boundaries": {
+                "left": left_boundary,
+                "right": right_boundary
+            }
         }
         
         # 缓存计算结果
@@ -753,6 +829,20 @@ class Road:
         
         return result
 
+    def _pre_generate_all_routes(self):
+        """
+        在仿真开始前，预先生成并缓存所有可能的路径及其边界。
+        这是确保 self.routes 不为空的关键。
+        """
+        print("Pre-generating all 12 routes and their boundaries...")
+        directions = ['north', 'south', 'east', 'west']
+        for start in directions:
+            for end in directions:
+                if start == end:
+                    continue
+                # 调用get_route_points会触发计算和缓存
+                self.get_route_points(start, end)
+        print("All routes pre-generated and cached.")
 
     def _remove_duplicate_points(self, points, tolerance=1):
         """Remove consecutive duplicate points from a list of points
@@ -856,3 +946,57 @@ class Road:
         pygame.draw.circle(surface, (255, 255, 255), (screen_x, screen_y), point_radius + 2, 2)
 
 
+
+    def get_potential_at_point(self, x, y, target_route_str=None):
+        """
+        【最终版】计算世界坐标系中任意一点(x, y)的势能值。
+        可以计算通用势场，也可以计算针对特定目标路径的势场。
+
+        Args:
+            x (float): 世界坐标x
+            y (float): 世界坐标y
+            target_route_str (str, optional): 目标路径字符串, e.g., 'S_W'. 
+                                              如果提供，则只计算相对于此路径的势能。
+                                              如果为 None，则计算通用势场（相对于最近路径）。
+
+        Returns:
+            float: 势能值
+        """
+        min_dist_to_centerline = float('inf')
+        is_inside = False
+
+        # 如果指定了目标路径
+        if target_route_str and target_route_str in self.routes:
+            route_data = self.routes[target_route_str]
+            centerline_np = np.array([p[:2] for p in route_data["smoothed"]])
+            min_dist_to_centerline = np.min(np.linalg.norm(centerline_np - np.array([x, y]), axis=1))
+            is_inside = min_dist_to_centerline <= self.lane_width / 2
+
+        # 如果没有指定目标路径，则使用旧的逻辑，找到最近的路径
+        else:
+            relevant_routes = []
+            for route_data in self.routes.values():
+                bbox = route_data.get("bbox")
+                if bbox and (bbox['min_x'] - 1 < x < bbox['max_x'] + 1 and bbox['min_y'] - 1 < y < bbox['max_y'] + 1):
+                    relevant_routes.append(route_data)
+            
+            if not relevant_routes:
+                relevant_routes = self.routes.values()
+
+            for route_data in relevant_routes:
+                centerline_np = np.array([p[:2] for p in route_data["smoothed"]])
+                dist = np.min(np.linalg.norm(centerline_np - np.array([x, y]), axis=1))
+                if dist < min_dist_to_centerline:
+                    min_dist_to_centerline = dist
+                    is_inside = dist <= self.lane_width / 2
+        
+        # --- 势能计算逻辑 ---
+        normalized_lateral_dist = min_dist_to_centerline / (self.lane_width / 2)
+        
+        if is_inside:
+            potential = normalized_lateral_dist**2
+        else:
+            dist_outside_norm = normalized_lateral_dist - 1.0
+            potential = 2 * dist_outside_norm + 1
+            
+        return potential

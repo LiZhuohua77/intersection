@@ -46,8 +46,8 @@ import pygame
 
 from road import Road
 from traffic import TrafficManager
-from config import * # 假设您的配置在这里
-from vehicle import RLVehicle # 确保RLVehicle类存在于vehicle.py中
+from config import * 
+from vehicle import RLVehicle 
 
 class TrafficEnv(gym.Env):
     """一个遵循Gymnasium接口的十字路口交通仿真环境。"""
@@ -65,8 +65,10 @@ class TrafficEnv(gym.Env):
 
         # 2. 定义动作和观测空间
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
-        observation_dim = 26 
+        observation_dim = 18 
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(observation_dim,), dtype=np.float32)
+
+        self.current_algo = 'sagi_ppo'
 
     def reset(self, seed=None, options=None):
         """重置环境到初始状态，可以根据options设置特定场景。"""
@@ -83,6 +85,8 @@ class TrafficEnv(gym.Env):
         if self.rl_agent is None:
             raise RuntimeError(f"环境重置失败：无法在场景'{scenario}'中生成RL Agent。")
 
+        self.current_algo = options.get("algo", "sagi_ppo") if options else "sagi_ppo"
+
         observation = self.rl_agent.get_observation(self.traffic_manager.vehicles)
         info = self._get_info()
         
@@ -92,8 +96,14 @@ class TrafficEnv(gym.Env):
         """执行一个时间步。"""
         # 1. RL Agent执行动作
         observation, reward, terminated, truncated, info = self.rl_agent.step(
-            action, self.dt, self.traffic_manager.vehicles
+            action, self.dt, self.traffic_manager.vehicles, self.current_algo
         )
+
+        if terminated or truncated:
+            # 如果结束了，就从RL Agent对象中获取完整的debug_log
+            # 并将其添加到即将返回的info字典中
+            if hasattr(self.rl_agent, 'debug_log'):
+                info['episode_log'] = self.rl_agent.debug_log
 
         # 2. 更新所有背景车辆
         self.traffic_manager.update_background_traffic(self.dt)

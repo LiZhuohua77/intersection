@@ -47,9 +47,9 @@ class Camera:
     def __init__(self, width, height):
         self.width = width
         self.height = height
-        self.zoom = 1.0
-        self.x = width / 2
-        self.y = height / 2
+        self.zoom = 2.0
+        self.x = 200
+        self.y = 200
         self.dragging = False
         self.drag_start_x = 0
         self.drag_start_y = 0
@@ -104,7 +104,8 @@ class InputHandler:
     def __init__(self):
         self.paused = False
         self.show_help = False
-    
+        self.show_potential_map = False
+
     def handle_event(self, event, camera, traffic_manager):
         """处理单个事件"""
         if event.type == pygame.MOUSEBUTTONDOWN:
@@ -174,7 +175,11 @@ class InputHandler:
             traffic_manager.set_traffic_pattern('rush_hour')
         elif event.key == pygame.K_4:
             traffic_manager.set_traffic_pattern('night')
+        elif event.key == pygame.K_m: # M for Map
+            self.show_potential_map = not self.show_potential_map
+            print(f"Potential Field Map {'shown' if self.show_potential_map else 'hidden'}")
         return False
+
 
     
     def _print_help(self):
@@ -201,32 +206,49 @@ class Renderer:
         self.font = pygame.font.SysFont(None, 24)
         self.small_font = pygame.font.SysFont(None, 18)
         self.background_color = (50, 50, 50)
-    
+        self.heatmap_surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        self.heatmap_generated_for_view = False # 改为更清晰的变量名
+        
+        # 用于检测视角变化的变量
+        self.last_camera_state = None
+
     def render_frame(self, road, traffic_manager, camera, input_handler):
         """渲染一帧"""
         width, height = self.screen.get_size()
         
-        # 清屏
+        # 1. 检查视角是否变化，如果变化，则标记热力图需要重新生成
+        if self._has_camera_view_changed(camera):
+            self.heatmap_generated_for_view = False
+
+        # 2. 清理主屏幕
         self.screen.fill(self.background_color)
         
-        # 创建临时Surface用于视图变换
+        # 3. 创建一个完全透明的画板用于绘制所有世界对象
         temp_surface = pygame.Surface((width, height), pygame.SRCALPHA)
-        temp_surface.fill(self.background_color)
-        
-        # 绘制道路
+
+        # 4. 绘制热力图 (如果需要)
+        if input_handler.show_potential_map:
+            if not self.heatmap_generated_for_view:
+                # 传入 self.heatmap_surface 让函数在它上面作画
+                self._render_potential_heatmap(road, camera, self.heatmap_surface)
+                self.heatmap_generated_for_view = True
+            # 将已经生成好的热力图画在世界画板的底层
+            temp_surface.blit(self.heatmap_surface, (0, 0))
+
+        # 5. 在热力图之上，绘制道路和车辆
         road.draw_road_lines(temp_surface, transform_func=camera.world_to_screen)
-        road.draw_center_lines(temp_surface, transform_func=camera.world_to_screen)
         road.draw_conflict_zones(temp_surface, transform_func=camera.world_to_screen)
+        # 您可以按需开启关闭这些，以更好地观察热力图
+        # road.draw_center_lines(temp_surface, transform_func=camera.world_to_screen)
+        #road.draw_boundaries(temp_surface, transform_func=camera.world_to_screen)
         
-        # 绘制所有车辆
         for vehicle in traffic_manager.vehicles:
             vehicle.draw(temp_surface, transform_func=camera.world_to_screen, small_font=self.small_font, scale=camera.zoom)
         
-        
-        # 将临时Surface绘制到屏幕
+        # 6. 将绘制好所有世界对象的画板，一次性贴到主屏幕上
         self.screen.blit(temp_surface, (0, 0))
         
-        # 绘制UI
+        # 7. 在最上层绘制UI
         self._render_ui(traffic_manager, camera, input_handler, width, height)
     
     
@@ -313,6 +335,39 @@ class Renderer:
             self.screen.blit(text, (help_rect.x + 20, y_offset))
             y_offset += 20
 
+    def _has_camera_view_changed(self, camera):
+        """检查相机视角（位置或缩放）是否发生变化"""
+        current_state = (camera.x, camera.y, camera.zoom)
+        if current_state != self.last_camera_state:
+            self.last_camera_state = current_state
+            return True
+        return False
+
+    def _render_potential_heatmap(self, road, camera, target_surface):
+        """(计算密集型) 生成并渲染势场热力图"""
+        print("Generating potential field heatmap...")
+        
+        width, height = target_surface.get_size()
+        grid_resolution = 20 # 分辨率，值越小越精细但越慢
+        
+        # 先清空旧的热力图
+        target_surface.fill((0, 0, 0, 0))
+
+        for y_screen in range(0, height, grid_resolution):
+            for x_screen in range(0, width, grid_resolution):
+                world_x, world_y = camera.screen_to_world(x_screen, y_screen)
+                potential = road.get_potential_at_point(world_x, world_y)
+                norm_potential = min(potential / 2.0, 1.0) # 归一化到 [0, 1]
+                
+                red = int(255 * norm_potential)
+                green = int(255 * (1 - norm_potential))
+                blue = 0
+                alpha = 90
+                
+                rect = pygame.Rect(x_screen, y_screen, grid_resolution, grid_resolution)
+                target_surface.fill((red, green, blue, alpha), rect)
+        
+        print("Heatmap generation complete.")
 
 class GameEngine:
     """游戏引擎，现在主要负责渲染和用户交互。"""

@@ -84,6 +84,41 @@ from lateral_control import MPCController
 from longitudinal_planner import LongitudinalPlanner
 from utils import check_obb_collision
 
+def calculate_spm_loss_kw(T_inst_nm, n_inst_rpm):
+    """
+    Calculates the power loss in kW for the SPM motor based on the polynomial model.
+    This is a vectorized version for grid calculations.
+    """
+    # 1. Define base values from the paper
+    T_base_nm = 250.0
+    n_base_rpm = 12000.0
+    P_loss_base_kW = 8.0
+
+    # 2. Normalize inputs
+    n_inst_krpm = n_inst_rpm / 1000.0
+    T_norm = T_inst_nm / T_base_nm
+    n_norm = n_inst_krpm / (n_base_rpm / 1000.0)
+
+    # 3. Use Table III coefficients for SPM to calculate normalized loss
+    loss_norm = (
+        -0.002
+        + 0.175 * n_norm
+        + 0.181 * (n_norm**2)
+        + 0.443 * (n_norm**3)
+        - 0.065 * T_norm
+        + 0.577 * T_norm * n_norm
+        - 0.542 * T_norm * (n_norm**2)
+        + 0.697 * (T_norm**2)
+        - 1.043 * (T_norm**2) * n_norm
+        + 0.942 * (T_norm**3)
+    )
+
+    # 4. Denormalize loss to get kW
+    loss_kW = loss_norm * P_loss_base_kW
+    
+    # The model can produce negative losses at very low torque/speed, which is unphysical.
+    # We clip the loss at a small positive value.
+    return np.maximum(0.01, loss_kW)
 
 class Vehicle:
     """
@@ -442,6 +477,14 @@ class Vehicle:
         """物理引擎，增加了低速保护。"""
         psi, vx, vy, psi_dot = self.state['psi'], self.state['vx'], self.state['vy'], self.state['psi_dot']
         
+        F_air_drag = 0.5 * AIR_DENSITY * DRAG_COEFFICIENT * FRONTAL_AREA * vx**2 * np.sign(vx)
+        F_rolling_resistance = ROLLING_RESISTANCE_COEFFICIENT * self.m * GRAVITATIONAL_ACCEL * np.sign(vx)
+        fx_net = fx_total - F_air_drag - F_rolling_resistance
+
+        max_lateral_force = self.m * GRAVITATIONAL_ACCEL * 0.9
+        alpha_slip_limit = np.deg2rad(10.0)
+        effective_cornering_stiffness = max_lateral_force / alpha_slip_limit
+
         # 当车辆速度非常低时，我们简化模型以避免除零错误和数值不稳定
         if abs(vx) < LOW_SPEED_THRESHOLD:
             # 在低速时，我们假设没有轮胎侧偏，因此没有侧向力
@@ -453,11 +496,23 @@ class Vehicle:
             # 速度足够时，正常使用自行车模型
             alpha_f = np.arctan((vy + self.lf * psi_dot) / vx) - delta
             alpha_r = np.arctan((vy - self.lr * psi_dot) / vx)
-            Fyf = -self.Cf * alpha_f
-            Fyr = -self.Cr * alpha_r
+            if abs(alpha_f) < alpha_slip_limit:
+                # 线性区
+                Fyf = -effective_cornering_stiffness * alpha_f
+            else:
+                # 饱和区
+                Fyf = -max_lateral_force * np.sign(alpha_f)
+
+            # --- 使用分段函数计算后轮侧向力 ---
+            if abs(alpha_r) < alpha_slip_limit:
+                # 线性区
+                Fyr = -effective_cornering_stiffness * alpha_r
+            else:
+                # 饱和区
+                Fyr = -max_lateral_force * np.sign(alpha_r)
         
         # 动力学方程保持不变
-        ax = fx_total / self.m
+        ax = fx_net / self.m
         # 注意：这里的 vx 应该用原始的 vx，而不是经过阈值判断的 vx，以正确计算离心力
         original_vx = self.state['vx']
         ay = (Fyf + Fyr) / self.m - original_vx * psi_dot 
@@ -623,11 +678,13 @@ class Vehicle:
 
 class RLVehicle(Vehicle):
     """
-    一个专门为强化学习设计的车辆代理 (根据您的需求重构)。
+    一个专门为强化学习设计的车辆代理。
     """
     def __init__(self, road, start_direction, end_direction, vehicle_id):
         super().__init__(road, start_direction, end_direction, vehicle_id)
         
+        self.target_route_str = f"{start_direction}_{end_direction}"
+
         # 禁用基于规则的控制器
         self.planner = None
         self.pid_controller = None
@@ -642,6 +699,8 @@ class RLVehicle(Vehicle):
         self.max_episode_steps = 1500 
         self.last_longitudinal_pos = self.get_current_longitudinal_pos()
         self.last_action = np.array([0.0, 0.0]) # 上一帧的动作，用于计算平滑度
+
+        self.debug_log = []
 
     def get_observation(self, all_vehicles):
         """
@@ -668,12 +727,12 @@ class RLVehicle(Vehicle):
         ]
         
         ego_observation = [ego_vx_norm, ego_vy_norm, ego_psi_dot_norm] + path_state
-
+        if ego_observation[1] > 100:
+            print(f"Warning: High lateral speed {ego_observation[1]} detected for vehicle {self.vehicle_id}")
         # --- 2. 周围车辆状态 (Surrounding Vehicles State) ---
         surrounding_obs = self._get_surrounding_vehicles_observation(all_vehicles)
 
         # --- 3. 组合成最终的扁平化向量 ---
-        # 6 (ego) + 5*4 (surrounding) = 26 个值
         observation = np.array(ego_observation + surrounding_obs, dtype=np.float32)
         return observation
 
@@ -718,50 +777,101 @@ class RLVehicle(Vehicle):
             surrounding_obs_flat.extend([0.0] * padding_len)
             
         return surrounding_obs_flat
-        
-    def calculate_reward(self, action, all_vehicles, terminated):
-        """根据您的四类要求，设计奖励函数。"""
-        
-        # --- 基础权重，这些是重要的超参数，需要仔细调整 ---
-        W_PROGRESS = 10.0    # 路径进展
-        W_CTE = -3.0        # 横向误差惩罚
-        W_ENERGY = 0     # 能量消耗惩罚
-        W_SMOOTH = 0     # 动作平滑度惩罚
-        W_SPEED_LIMIT = 0# 超速惩罚
-        R_SUCCESS = 300.0   # 成功到达终点
-        R_COLLISION = -500.0# 碰撞惩罚
-        
-        # 1. 安全类奖励 (Safety)
-        if self._check_collision(all_vehicles):
-            return R_COLLISION
-        if self.completed:
-            return R_SUCCESS
 
-        reward = 0.0
+    def _calculate_energy_consumption(self, commanded_accel):
+        """
+        根据车辆状态和期望加速度，计算最终的电功率消耗 P_elec。
+        """
+        current_vx = self.state['vx']
+        
+        # --- 1. 计算车轮处的总牵引力 F_tractive ---
+        # F_tractive 是电机需要产生并传递到车轮上的力
+        # 它需要克服惯性、空气阻力和滚动阻力
+        F_inertial = self.m * commanded_accel
+        F_aero = 0.5 * DRAG_COEFFICIENT * FRONTAL_AREA * AIR_DENSITY * (current_vx**2)
+        F_roll = ROLLING_RESISTANCE_COEFFICIENT * self.m * GRAVITATIONAL_ACCEL
+        F_tractive = F_inertial + F_aero + F_roll
+        
+        # --- 2. 将车轮的力/速度转换为电机轴的扭矩/转速 ---
+        # 电机扭矩 (Nm)
+        motor_torque_nm = (F_tractive * WHEEL_RADIUS) / (GEAR_RATIO * DRIVETRAIN_EFFICIENCY)
+        # 电机转速 (rpm)
+        motor_speed_rad_s = (current_vx / WHEEL_RADIUS) * GEAR_RATIO
+        motor_speed_rpm = motor_speed_rad_s * (60 / (2 * np.pi))
 
-        # 2. 路径进展奖励 (Path Progress)
+        # --- 3. 根据驱动/制动工况，计算电功率 P_elec ---
+        if motor_torque_nm >= 0:
+            # --- 驱动模式 ---
+            # 机械功率 (kW)
+            P_mech_kW = (motor_torque_nm * motor_speed_rad_s) / 1000.0
+            # 从SPM模型中获取电机损耗 (kW)
+            P_loss_kW = calculate_spm_loss_kw(motor_torque_nm, motor_speed_rpm)
+            # 电功率 = 机械功率 + 损耗
+            P_elec_kW = P_mech_kW + P_loss_kW
+        else:
+            # --- 再生制动模式 ---
+            # 机械功率为负值
+            P_mech_kW = (motor_torque_nm * motor_speed_rad_s) / 1000.0
+            # 回收的电功率 = 机械功率 * 回收效率
+            # P_elec_kW 此时也为负，代表能量回到电池
+            P_elec_kW = P_mech_kW * REGEN_EFFICIENCY
+
+        return P_elec_kW
+
+    def calculate_reward(self, action, is_collision, is_baseline_agent):
+
+        # --- 权重参数 ---
+        W_PROGRESS = 10.0
+        R_SUCCESS = 500.0
+        R_COLLISION = -500.0
+        W_ENERGY = -0
+        W_COST_PENALTY = -20
+
+        # --- 1. 创建一个字典来存储所有奖励分量 ---
+        reward_components = {}
+
+        # --- 2. 计算各个基础奖励分量，并存入字典 ---
+        # 进度奖励
         current_longitudinal_pos = self.get_current_longitudinal_pos()
         progress = current_longitudinal_pos - self.last_longitudinal_pos
-        reward += progress * W_PROGRESS
+        reward_components['progress'] = W_PROGRESS * progress
+
+        # 能量消耗奖励
+        acceleration = action[0] * MAX_ACCELERATION
+        P_elec_kW = self._calculate_energy_consumption(acceleration)
+        reward_components['energy'] = W_ENERGY * P_elec_kW
         
-        # 同时惩罚偏离路径
-        current_pos = np.array([self.state['x'], self.state['y']])
-        cross_track_error = np.min(np.linalg.norm(self.path_points_np - current_pos, axis=1))
-        reward += cross_track_error * W_CTE
+        # 【未来扩展】如果要增加舒适度奖励，只需在这里加几行：
+        # comfort_penalty = self._calculate_comfort_penalty()
+        # reward_components['comfort'] = W_COMFORT * comfort_penalty
 
-        # 3. 能量消耗奖励 (Energy/SOC) - 用动作的范数作为代理
-        energy_cost = np.linalg.norm(action) # action是归一化的[-1, 1]动作
-        reward += energy_cost * W_ENERGY
+        # --- 3. 处理依赖于特定算法的奖励（解决了缺陷2）---
+        if is_baseline_agent:
+            cost = self.calculate_cost()
+            reward_components['cost_penalty'] = W_COST_PENALTY * cost
+        else:
+            reward_components['cost_penalty'] = 0.0
 
-        # 4. 平滑度奖励 (Smoothness) - 惩罚动作的剧烈变化
-        smoothness_cost = np.linalg.norm(action - self.last_action)
-        reward += smoothness_cost * W_SMOOTH
+        # --- 4. 计算步进奖励的总和 ---
+        # 我们从字典中取出所有值并求和
+        total_reward = sum(reward_components.values())
+
+        # --- 5. 根据终局状态，最终决定奖励值 ---
+        if is_collision:
+            total_reward = R_COLLISION
+        if self.completed:
+            total_reward = R_SUCCESS
+            
+        # 将最终的总奖励也存入字典，方便step函数直接获取
+        reward_components['total_reward'] = total_reward
         
-        # 附加项：我们之前讨论的超速惩罚
-        if self.state['vx'] > GIPPS_V_DESIRED:
-            reward += (self.state['vx'] - GIPPS_V_DESIRED) * W_SPEED_LIMIT
+        return reward_components
 
-        return reward
+    def calculate_cost(self):
+        # 【新增】将您提供的势函数代码放在这里
+        # 假设 self.road 是道路对象
+        potential = self.road.get_potential_at_point(self.state['x'], self.state['y'], self.target_route_str)
+        return potential
 
     def _check_collision(self, all_vehicles):
         """
@@ -778,41 +888,60 @@ class RLVehicle(Vehicle):
         return False
 
         
-    def step(self, action, dt, all_vehicles):
-        """RL Agent的核心函数。"""
+    def step(self, action, dt, all_vehicles, algo_name="sagi_ppo"):
+        """RL Agent的核心函数，移除了越界终止。"""
         self.steps_since_spawn += 1
-        
+        print(f"Raw action from network: accel={action[0]:.2f}, steer={action[1]:.2f}")
         # 1. 解读并执行动作
-        # 将归一化的动作 [-1, 1] 映射到真实的物理值
         acceleration = action[0] * MAX_ACCELERATION
         steering_angle = action[1] * MAX_STEERING_ANGLE
+        self._update_physics(acceleration * self.m, steering_angle, dt)
         
-        # 更新物理状态
-        longitudinal_force = acceleration * self.m
-        self._update_physics(longitudinal_force, steering_angle, dt)
-        
-        # 应用速度硬性限制作为安全保障
-        self.state['vx'] = max(0, min(self.state['vx'], GIPPS_V_DESIRED * 1.1)) # 允许稍微超过一点
-
-        # 记录用于下一次计算的变量
+        self.state['vx'] = max(0, min(self.state['vx'], GIPPS_V_DESIRED))
         self.last_steering_angle = steering_angle
         self.speed_history.append(self.get_current_speed())
 
-        # 2. 检查终止条件
+        # 2. 检查终止条件 (核心修改：移除了 is_out_of_bounds)
+        is_collision = self._check_collision(all_vehicles)
         self._check_completion()
-        terminated = self.completed or self._check_collision(all_vehicles)
+        
+        terminated = self.completed or is_collision
         truncated = self.steps_since_spawn >= self.max_episode_steps
 
         # 3. 计算奖励和新的观测值
-        # 注意：奖励函数现在也需要action来计算平滑度
-        reward = self.calculate_reward(action, all_vehicles, terminated)
+        is_baseline = (algo_name == "ppo")
+        reward_info = self.calculate_reward(action, is_collision, is_baseline_agent=is_baseline)
+        total_reward = reward_info['total_reward'] # 直接从字典获取最终奖励
+
+        # --- 5. 获取新的观测值 ---
         observation = self.get_observation(all_vehicles)
         
-        # 更新用于下次计算的"last"变量
+        # --- 6. 将本步的所有关键信息存入日志 ---
+        cost = self.calculate_cost()
+        log_entry = {
+            'step': self.steps_since_spawn,
+            'action_accel': action[0],
+            'action_steer': action[1],
+            'reward_progress': reward_info.get('progress', 0), # 从字典安全地获取
+            'reward_energy': reward_info.get('energy', 0),
+            'reward_cost_penalty': reward_info.get('cost_penalty', 0),
+            'total_reward': total_reward,
+            'raw_cost_potential': cost,
+            'ego_vx': self.state['vx'],
+            'ego_vy': self.state['vy'],
+            'cross_track_error': (observation[3] * self.road.lane_width * 2),
+            'heading_error': (observation[4] * np.pi)
+        }
+        self.debug_log.append(log_entry)
+
+        # --- 7. 更新用于下一帧计算的状态变量 ---
         self.last_longitudinal_pos = self.get_current_longitudinal_pos()
         self.last_action = action
 
-        return observation, reward, terminated, truncated, {} # info可以为空
+        # --- 8. 准备并返回所有信息 ---
+        info = {"cost": cost, 'failure': 'collision' if is_collision else None}
+        
+        return observation, total_reward, terminated, truncated, info
 
     def reset(self):
         """重置Agent的状态，用于开始新回合。"""
@@ -821,3 +950,5 @@ class RLVehicle(Vehicle):
         self.last_longitudinal_pos = self.get_current_longitudinal_pos()
         self.last_action = np.array([0.0, 0.0])
         self.steps_since_spawn = 0
+
+        self.debug_log = []

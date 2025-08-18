@@ -34,58 +34,141 @@
 """
 
 import pygame
+import torch
+import os
+import argparse
+import numpy as np
 from game_engine import GameEngine
 from traffic_env import TrafficEnv
-from ddpg import DDPGAgent 
+from sagi_ppo import SAGIPPOAgent
+from ppo import PPOAgent
+
+def parse_args():
+    """解析命令行参数"""
+    parser = argparse.ArgumentParser(description="Evaluate a trained PPO/SAGI-PPO agent.")
+    parser.add_argument("--algo", type=str, default="sagi_ppo", choices=["sagi_ppo", "ppo"],
+                        help="The algorithm of the trained agent to evaluate.")
+    parser.add_argument("--model-dir", type=str,  default="models/sagi_ppo_20250818-222357",
+                        help="Path to the directory containing the saved model files (e.g., 'models/sagi_ppo_YYYYMMDD-HHMMSS').")
+    parser.add_argument("--num-episodes", type=int, default=1, 
+                        help="Number of episodes to run for evaluation.")
+    return parser.parse_args()
 
 def main():
-    """主函数，用于可视化评估一个训练好的DDPG agent。"""
+    """主函数，用于可视化和量化评估一个训练好的 agent。"""
+    args = parse_args()
     
-    # 1. 创建环境 (模型)，注意这里没有render_mode
+    # --- 2. 创建环境和游戏引擎 ---
     env = TrafficEnv()
-    
-    # 2. 创建游戏引擎 (视图/控制器)
-    game_engine = GameEngine(width=800, height=800)
+    game_engine = GameEngine(width=800, height=800) # 可以调大窗口以便观察
 
-    # 3. 创建DDPG agent并加载训练好的模型权重
+    # --- 3. 根据算法选择，创建Agent并加载模型 ---
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
-    action_high = env.action_space.high
     
-    agent = DDPGAgent(state_dim=state_dim, action_dim=action_dim, action_high=action_high)
-    
-    # --- 重要: 将这里的文件名替换为您实际保存的模型文件 ---
-    MODEL_PATH = "ddpg_episode_400.pth" # 示例文件名
-    agent.load_model(MODEL_PATH)
-    
-    # 重置环境，为第一个测试场景做准备
-    state, info = env.reset(options={'scenario': 'agent_only'})
-    
-    print("--- 开始评估 ---")
-    try:
-        while game_engine.is_running():
-            game_engine.handle_events(env)
-            
-            if not game_engine.input_handler.paused:
-                action = agent.select_action(state, add_noise=False)
-                next_state, reward, terminated, truncated, info = env.step(action)
-                state = next_state
-                
-                if terminated or truncated:
-                    print(f"回合结束。正在重置...")
-                    # 自动循环测试场景
-                    scenarios = ['protected_left_turn', 'unprotected_left_turn', 'head_on_conflict', 'agent_only']
-                    episode_count = info.get('episode', 0)
-                    next_scenario = scenarios[episode_count % len(scenarios)]
-                    state, info = env.reset(options={'scenario': 'agent_only'})
+    agent = None
+    if args.algo == "sagi_ppo":
+        print("--- Loading SAGI-PPO Agent ---")
+        agent = SAGIPPOAgent(state_dim=state_dim, action_dim=action_dim)
+        actor_path = os.path.join(args.model_dir, "sagi_ppo_actor.pth")
+        critic_r_path = os.path.join(args.model_dir, "sagi_ppo_critic_r.pth")
+        critic_c_path = os.path.join(args.model_dir, "sagi_ppo_critic_c.pth")
+        
+        agent.actor.load_state_dict(torch.load(actor_path))
+        agent.critic_r.load_state_dict(torch.load(critic_r_path))
+        agent.critic_c.load_state_dict(torch.load(critic_c_path))
+        
+    elif args.algo == "ppo":
+        print("--- Loading PPO Agent ---")
+        agent = PPOAgent(state_dim=state_dim, action_dim=action_dim)
+        actor_path = os.path.join(args.model_dir, "ppo_actor.pth")
+        critic_path = os.path.join(args.model_dir, "ppo_critic.pth")
 
-            game_engine.render(env)
-            game_engine.tick()
+        agent.actor.load_state_dict(torch.load(actor_path))
+        agent.critic.load_state_dict(torch.load(critic_path))
+
+    # 将网络设置为评估模式
+    agent.actor.eval()
+    if isinstance(agent, SAGIPPOAgent):
+        agent.critic_r.eval()
+        agent.critic_c.eval()
+    else:
+        agent.critic.eval()
+    
+    # --- 4. 评估主循环 ---
+    eval_stats = {
+        "rewards": [], "costs": [], "lengths": [],
+        "success": 0, "collision": 0, "timeout": 0
+    }
+    
+    scenarios = ['agent_only']
+
+    print(f"--- 开始评估, 运行 {args.num_episodes} 个回合 ---")
+    try:
+        for i in range(args.num_episodes):
+            current_scenario = scenarios[i % len(scenarios)]
+            state, info = env.reset(options={'scenario': current_scenario})
+            
+            episode_reward, episode_cost, episode_len = 0, 0, 0
+            
+            print(f"\n--- [回合 {i+1}/{args.num_episodes}, 场景: {current_scenario}] ---")
+
+            while game_engine.is_running():
+                game_engine.handle_events(env)
+                
+                if not game_engine.input_handler.paused:
+                    # --- 5. 使用确定性动作 ---
+                    action = agent.get_deterministic_action(state)
+                    
+                    next_state, reward, terminated, truncated, info = env.step(action)
+                    state = next_state
+                    
+                    episode_reward += reward
+                    episode_cost += info.get('cost', 0)
+                    episode_len += 1
+                    
+                    done = terminated or truncated
+                    if done:
+                        # 记录回合结果
+                        eval_stats["rewards"].append(episode_reward)
+                        eval_stats["costs"].append(episode_cost)
+                        eval_stats["lengths"].append(episode_len)
+                        
+                        if info.get('failure') == 'collision':
+                            eval_stats["collision"] += 1
+                            print("结果: 碰撞 (Collision)")
+                        elif truncated:
+                            eval_stats["timeout"] += 1
+                            print("结果: 超时 (Timeout)")
+                        else: # terminated and not collision
+                            eval_stats["success"] += 1
+                            print("结果: 成功 (Success)")
+                        
+                        break # 结束当前回合的循环
+                
+                game_engine.render(env)
+                game_engine.tick()
 
     except KeyboardInterrupt:
         print("\n评估被用户中断")
     finally:
         game_engine.quit()
+
+    # --- 6. 打印最终的量化评估结果 ---
+    print("\n\n--- 评估结果汇总 ---")
+    num_episodes = len(eval_stats["rewards"])
+    if num_episodes > 0:
+        print(f"总回合数: {num_episodes}")
+        print(f"平均奖励: {np.mean(eval_stats['rewards']):.2f} ± {np.std(eval_stats['rewards']):.2f}")
+        print(f"平均成本: {np.mean(eval_stats['costs']):.2f} ± {np.std(eval_stats['costs']):.2f}")
+        print(f"平均长度: {np.mean(eval_stats['lengths']):.2f}")
+        print("-" * 20)
+        print(f"成功率: {eval_stats['success'] / num_episodes:.2%}")
+        print(f"碰撞率: {eval_stats['collision'] / num_episodes:.2%}")
+        print(f"超时率: {eval_stats['timeout'] / num_episodes:.2%}")
+    else:
+        print("没有完成任何回合的评估。")
+
 
 if __name__ == "__main__":
     main()
