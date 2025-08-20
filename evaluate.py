@@ -38,6 +38,7 @@ import torch
 import os
 import argparse
 import numpy as np
+import pandas as pd
 from game_engine import GameEngine
 from traffic_env import TrafficEnv
 from sagi_ppo import SAGIPPOAgent
@@ -48,7 +49,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate a trained PPO/SAGI-PPO agent.")
     parser.add_argument("--algo", type=str, default="sagi_ppo", choices=["sagi_ppo", "ppo"],
                         help="The algorithm of the trained agent to evaluate.")
-    parser.add_argument("--model-dir", type=str,  default="models/sagi_ppo_20250818-222357",
+    parser.add_argument("--model-dir", type=str,  default="models/sagi_ppo_20250820-183834",
                         help="Path to the directory containing the saved model files (e.g., 'models/sagi_ppo_YYYYMMDD-HHMMSS').")
     parser.add_argument("--num-episodes", type=int, default=1, 
                         help="Number of episodes to run for evaluation.")
@@ -94,7 +95,12 @@ def main():
         agent.critic_c.eval()
     else:
         agent.critic.eval()
-    
+
+    model_name = os.path.basename(args.model_dir) # 从模型路径获取名字
+    log_save_dir = os.path.join("evaluation_logs", model_name)
+    os.makedirs(log_save_dir, exist_ok=True)
+    print(f"评估日志将保存在: {log_save_dir}")
+
     # --- 4. 评估主循环 ---
     eval_stats = {
         "rewards": [], "costs": [], "lengths": [],
@@ -143,7 +149,22 @@ def main():
                         else: # terminated and not collision
                             eval_stats["success"] += 1
                             print("结果: 成功 (Success)")
-                        
+                        # --- 回合结束，保存该回合的详细日志 ---
+                        agent_vehicle = env.agent_vehicle
+                        if agent_vehicle and agent_vehicle.debug_log:
+                            # 1. 将log列表转换为DataFrame
+                            log_df = pd.DataFrame(agent_vehicle.debug_log)
+                            
+                            # 2. 定义文件名
+                            outcome = "success"
+                            if info.get('failure') == 'collision': outcome = "collision"
+                            elif truncated: outcome = "timeout"
+                            log_filename = f"episode_{i+1}_{current_scenario}_{outcome}.csv"
+                            
+                            # 3. 保存文件
+                            log_filepath = os.path.join(log_save_dir, log_filename)
+                            log_df.to_csv(log_filepath, index=False)
+                            print(f"日志已保存到: {log_filepath}")
                         break # 结束当前回合的循环
                 
                 game_engine.render(env)

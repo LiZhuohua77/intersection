@@ -17,8 +17,9 @@ def plot_reward_composition(df):
 
     steps = df['step']
     reward_components = {
-        '进度奖励 (Progress)': df['reward_progress'],
-        '能量奖励 (Energy)': df['reward_energy'],
+        '速度跟踪奖励 (Velocity Tracking)': df['reward_velocity_tracking'],
+        '时间惩罚 (Time Penalty)': df['reward_time_penalty'],
+        '动作平滑度惩罚 (Action Smoothness)': df['reward_action_smoothness'],
         '成本惩罚 (Cost Penalty)': df['reward_cost_penalty']
     }
     total_reward = df['total_reward']
@@ -97,7 +98,7 @@ def plot_actions_and_states(df):
 if __name__ == "__main__":
     try:
         # 加载最新的日志文件
-        log_df = pd.read_csv("D:\Code\intersection\logs\sagi_ppo_20250818-232605\episode_3_log.csv")
+        log_df = pd.read_csv("D:\Code\intersection\logs\sagi_ppo_20250819-112407\episode_1_log.csv")
 
         print("成功加载日志文件，开始绘图...")
         

@@ -474,60 +474,69 @@ class Vehicle:
 
 
     def _update_physics(self, fx_total, delta, dt):
-        """物理引擎，增加了低速保护。"""
+        """
+        混合物理引擎：
+        - 高速时使用动力学自行车模型。
+        - 低速时使用运动学自行车模型以保证转向的真实性。
+        """
         psi, vx, vy, psi_dot = self.state['psi'], self.state['vx'], self.state['vy'], self.state['psi_dot']
         
+        # 1. 计算纵向力和纵向加速度 (所有速度下通用)
         F_air_drag = 0.5 * AIR_DENSITY * DRAG_COEFFICIENT * FRONTAL_AREA * vx**2 * np.sign(vx)
         F_rolling_resistance = ROLLING_RESISTANCE_COEFFICIENT * self.m * GRAVITATIONAL_ACCEL * np.sign(vx)
         fx_net = fx_total - F_air_drag - F_rolling_resistance
-
-        max_lateral_force = self.m * GRAVITATIONAL_ACCEL * 0.9
-        alpha_slip_limit = np.deg2rad(10.0)
-        effective_cornering_stiffness = max_lateral_force / alpha_slip_limit
-
-        # 当车辆速度非常低时，我们简化模型以避免除零错误和数值不稳定
+        ax = fx_net / self.m
+        
+        # 2. 根据速度选择模型，并计算相应的横向加速度(ay)和航向角加速度(psi_ddot_deriv)
         if abs(vx) < LOW_SPEED_THRESHOLD:
-            # 在低速时，我们假设没有轮胎侧偏，因此没有侧向力
-            alpha_f = 0.0
-            alpha_r = 0.0
-            Fyf = 0.0
-            Fyr = 0.0
+            # --- 低速区: 使用运动学模型 (Kinematic Model) ---
+            L = self.lf + self.lr  # 车辆轴距
+
+            if abs(np.cos(delta)) > 1e-6:
+                target_psi_dot = (vx * np.tan(delta)) / L
+            else:
+                target_psi_dot = 0.0
+
+            self.state['vy'] = 0
+            
+            # 【核心修改】ay 和 psi_ddot_deriv 在此代码块内被定义
+            psi_ddot_deriv = (target_psi_dot - psi_dot) / dt
+            ay = target_psi_dot * vx
+
         else:
-            # 速度足够时，正常使用自行车模型
+            # --- 高速区: 使用动力学模型 (Dynamic Model) ---
+            max_lateral_force = self.m * GRAVITATIONAL_ACCEL * 0.9
+            alpha_slip_limit = np.deg2rad(10.0)
+            effective_cornering_stiffness = max_lateral_force / alpha_slip_limit
+
             alpha_f = np.arctan((vy + self.lf * psi_dot) / vx) - delta
             alpha_r = np.arctan((vy - self.lr * psi_dot) / vx)
+            
             if abs(alpha_f) < alpha_slip_limit:
-                # 线性区
                 Fyf = -effective_cornering_stiffness * alpha_f
             else:
-                # 饱和区
                 Fyf = -max_lateral_force * np.sign(alpha_f)
 
-            # --- 使用分段函数计算后轮侧向力 ---
             if abs(alpha_r) < alpha_slip_limit:
-                # 线性区
                 Fyr = -effective_cornering_stiffness * alpha_r
             else:
-                # 饱和区
                 Fyr = -max_lateral_force * np.sign(alpha_r)
-        
-        # 动力学方程保持不变
-        ax = fx_net / self.m
-        # 注意：这里的 vx 应该用原始的 vx，而不是经过阈值判断的 vx，以正确计算离心力
-        original_vx = self.state['vx']
-        ay = (Fyf + Fyr) / self.m - original_vx * psi_dot 
-        psi_ddot_deriv = (self.lf * Fyf - self.lr * Fyr) / self.Iz
-        
-        # 积分更新状态
+            
+            # 【核心修改】将 ay 和 psi_ddot_deriv 的计算移入 else 块内
+            original_vx = self.state['vx']
+            ay = (Fyf + Fyr) / self.m - original_vx * psi_dot 
+            psi_ddot_deriv = (self.lf * Fyf - self.lr * Fyr) / self.Iz
+            
+        # 3. 统一的状态积分 (此时 ax, ay, psi_ddot_deriv 都有明确定义)
         self.state['vx'] += ax * dt
         self.state['vy'] += ay * dt
         self.state['psi_dot'] += psi_ddot_deriv * dt
         
-        # 更新位置和姿态
-        # 这里的 vx 和 vy 应该用更新前的，或者用更新后的值的平均，以提高精度 (欧拉积分)
+        # 4. 更新全局位置和姿态
         # 为简单起见，我们使用更新前的值
-        self.state['x'] += (original_vx * np.cos(psi) - vy * np.sin(psi)) * dt
-        self.state['y'] += (original_vx * np.sin(psi) + vy * np.cos(psi)) * dt
+        original_vx = self.state['vx']
+        self.state['x'] += (vx * np.cos(psi) - vy * np.sin(psi)) * dt
+        self.state['y'] += (vx * np.sin(psi) + vy * np.cos(psi)) * dt
         self.state['psi'] += psi_dot * dt
         
     def draw(self, surface, transform_func, small_font, scale=1.0):
@@ -696,10 +705,11 @@ class RLVehicle(Vehicle):
         
         # 用于计算奖励和判断超时的状态
         self.steps_since_spawn = 0
-        self.max_episode_steps = 1500 
+        self.max_episode_steps = 1000 
         self.last_longitudinal_pos = self.get_current_longitudinal_pos()
         self.last_action = np.array([0.0, 0.0]) # 上一帧的动作，用于计算平滑度
-
+        self.cross_track_error = 0.0
+        self.heading_error = 0.0
         self.debug_log = []
 
     def get_observation(self, all_vehicles):
@@ -716,13 +726,13 @@ class RLVehicle(Vehicle):
         current_pos = np.array([self.state['x'], self.state['y']])
         distances_to_path = np.linalg.norm(self.path_points_np - current_pos, axis=1)
         current_path_index = np.argmin(distances_to_path)
-        cross_track_error = distances_to_path[current_path_index]
+        self.cross_track_error = distances_to_path[current_path_index]
         path_angle = self.reference_path[current_path_index][2]
-        heading_error = (self.state['psi'] - path_angle + np.pi) % (2 * np.pi) - np.pi
+        self.heading_error = (self.state['psi'] - path_angle + np.pi) % (2 * np.pi) - np.pi
 
         path_state = [
-            cross_track_error / (self.road.lane_width * 2), # 归一化横向误差
-            heading_error / np.pi,                         # 归一化航向角误差
+            self.cross_track_error / (self.road.lane_width * 2), # 归一化横向误差
+            self.heading_error / np.pi,                         # 归一化航向角误差
             self.get_current_longitudinal_pos() / self.path_distances[-1] # 路径完成度
         ]
         
@@ -819,50 +829,68 @@ class RLVehicle(Vehicle):
         return P_elec_kW
 
     def calculate_reward(self, action, is_collision, is_baseline_agent):
+        # --- 建议的权重参数 ---
+        W_PROGRESS = 100.0        # [新增] 进度奖励权重
+        W_VELOCITY = 3         # 速度跟踪奖励权重
+        VELOCITY_STD = 5.0  
+        W_TIME = -0.0            # 时间惩罚 (每步-0.1分)
+        W_ACTION_SMOOTH = -0.2   # 动作平滑度惩罚权重
+        
+        R_SUCCESS = 500.0        # 成功奖励
+        R_COLLISION = -500.0     # 碰撞惩罚
+        W_COST_PENALTY = -0.1   # (仅用于PPO baseline) 成本惩罚权重
 
-        # --- 权重参数 ---
-        W_PROGRESS = 10.0
-        R_SUCCESS = 500.0
-        R_COLLISION = -500.0
-        W_ENERGY = -0
-        W_COST_PENALTY = -20
+        W_CTE = -1.5  # 横向误差惩罚
+        W_HEADING = 100 # 航向误差奖励
+
+        # 期望速度，可以设为道路限速
+        DESIRED_VELOCITY = GIPPS_V_DESIRED 
 
         # --- 1. 创建一个字典来存储所有奖励分量 ---
         reward_components = {}
 
-        # --- 2. 计算各个基础奖励分量，并存入字典 ---
-        # 进度奖励
+        # --- 2. 计算各个基础奖励分量 ---
+        # [新增] 行驶进度奖励 (Progress Reward)
         current_longitudinal_pos = self.get_current_longitudinal_pos()
         progress = current_longitudinal_pos - self.last_longitudinal_pos
-        reward_components['progress'] = W_PROGRESS * progress
+        # 只有当车辆在路径上前进时才给予奖励，防止因路径计算误差导致的小幅后退产生负奖励
+        reward_components['progress'] = W_PROGRESS * max(0, progress)
+        # 效率奖励 (核心修改)
+        current_speed = self.state['vx']
+        velocity_diff_sq = (current_speed - DESIRED_VELOCITY)**2
+        reward_components['velocity_tracking'] = W_VELOCITY * np.exp(-velocity_diff_sq / (2 * VELOCITY_STD**2))
 
-        # 能量消耗奖励
-        acceleration = action[0] * MAX_ACCELERATION
-        P_elec_kW = self._calculate_energy_consumption(acceleration)
-        reward_components['energy'] = W_ENERGY * P_elec_kW
+        cte_penalty = W_CTE * (self.cross_track_error)
+        heading_reward = W_HEADING * np.cos(self.heading_error)
+        reward_components['heading_reward'] = heading_reward # 注意，现在是 reward 而不是 penalty
+        reward_components['cte_penalty'] = cte_penalty
         
-        # 【未来扩展】如果要增加舒适度奖励，只需在这里加几行：
-        # comfort_penalty = self._calculate_comfort_penalty()
-        # reward_components['comfort'] = W_COMFORT * comfort_penalty
+        # 时间惩罚，鼓励车辆尽快完成任务
+        reward_components['time_penalty'] = W_TIME
+        
+        # 舒适性奖励
+        action_diff = action - self.last_action
+        smoothness_penalty = np.sum(action_diff**2)
+        reward_components['action_smoothness'] = W_ACTION_SMOOTH * smoothness_penalty
 
-        # --- 3. 处理依赖于特定算法的奖励（解决了缺陷2）---
+        # --- 3. 处理PPO基准的成本惩罚 ---
         if is_baseline_agent:
             cost = self.calculate_cost()
             reward_components['cost_penalty'] = W_COST_PENALTY * cost
         else:
-            reward_components['cost_penalty'] = 0.0
+            cost = self.calculate_cost()
+            reward_components['cost_penalty'] = W_COST_PENALTY * cost
 
         # --- 4. 计算步进奖励的总和 ---
-        # 我们从字典中取出所有值并求和
         total_reward = sum(reward_components.values())
 
-        # --- 5. 根据终局状态，最终决定奖励值 ---
+        # --- 5. 根据终局状态，覆盖奖励值 ---
         if is_collision:
             total_reward = R_COLLISION
         if self.completed:
-            total_reward = R_SUCCESS
+            # 成功时可以给予一个较大的正奖励，也可以不给，让其依靠累积奖励
+            total_reward += R_SUCCESS 
             
-        # 将最终的总奖励也存入字典，方便step函数直接获取
         reward_components['total_reward'] = total_reward
         
         return reward_components
@@ -891,7 +919,7 @@ class RLVehicle(Vehicle):
     def step(self, action, dt, all_vehicles, algo_name="sagi_ppo"):
         """RL Agent的核心函数，移除了越界终止。"""
         self.steps_since_spawn += 1
-        print(f"Raw action from network: accel={action[0]:.2f}, steer={action[1]:.2f}")
+        #print(f"Raw action from network: accel={action[0]:.2f}, steer={action[1]:.2f}")
         # 1. 解读并执行动作
         acceleration = action[0] * MAX_ACCELERATION
         steering_angle = action[1] * MAX_STEERING_ANGLE
@@ -922,10 +950,14 @@ class RLVehicle(Vehicle):
             'step': self.steps_since_spawn,
             'action_accel': action[0],
             'action_steer': action[1],
-            'reward_progress': reward_info.get('progress', 0), # 从字典安全地获取
-            'reward_energy': reward_info.get('energy', 0),
+            
+            # 从 reward_info 字典中获取所有奖励分量
+            'reward_velocity_tracking': reward_info.get('velocity_tracking', 0),
+            'reward_time_penalty': reward_info.get('time_penalty', 0),
+            'reward_action_smoothness': reward_info.get('action_smoothness', 0),
             'reward_cost_penalty': reward_info.get('cost_penalty', 0),
-            'total_reward': total_reward,
+            'total_reward': total_reward, # 记录最终（可能被终局奖励覆盖的）总奖励
+            
             'raw_cost_potential': cost,
             'ego_vx': self.state['vx'],
             'ego_vy': self.state['vy'],

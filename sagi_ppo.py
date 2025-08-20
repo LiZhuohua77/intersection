@@ -26,6 +26,9 @@ class Actor(nn.Module):
         self.apply(init_weights)
 
     def forward(self, state):
+        LOG_STD_MAX = 0
+        LOG_STD_MIN = -5 # SAC等算法常用-20，这里用-5或-10更常见
+        self.log_std.data.clamp_(LOG_STD_MIN, LOG_STD_MAX)
         mean = self.net(state)
         std = self.log_std.exp().expand_as(mean)
         dist = Normal(mean, std)
@@ -141,10 +144,11 @@ class SAGIPPOAgent:
         with torch.no_grad():
             dist = self.actor(state)
             action = dist.sample()
+            action_clipped = torch.clamp(action, -1, 1)
             log_prob = dist.log_prob(action).sum(axis=-1)
             value_r = self.critic_r(state)
             value_c = self.critic_c(state)
-        return action.numpy().flatten(), value_r.item(), value_c.item(), log_prob.item()
+        return action_clipped.numpy().flatten(), value_r.item(), value_c.item(), log_prob.item()
 
     def get_deterministic_action(self, state):
         """获取确定性动作（策略分布的均值），用于评估。"""

@@ -20,19 +20,19 @@ def parse_args():
     parser.add_argument("--algo", type=str, default="sagi_ppo", choices=["sagi_ppo", "ppo"], help="The reinforcement learning algorithm to use.")
     
     # --- 训练过程参数 ---
-    parser.add_argument("--total-timesteps", type=int, default=500000, help="Total timesteps to train the agent.")
+    parser.add_argument("--total-timesteps", type=int, default=400000, help="Total timesteps to train the agent.")
     parser.add_argument("--buffer-size", type=int, default=2048, help="Size of the rollout buffer.")
-    parser.add_argument("--update-epochs", type=int, default=10, help="Number of epochs to update the policy per rollout.")
+    parser.add_argument("--update-epochs", type=int, default=2, help="Number of epochs to update the policy per rollout.")
 
     # --- 算法超参数 ---
-    parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate for the optimizers.")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate for the optimizers.")
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor gamma.")
     parser.add_argument("--gae-lambda", type=float, default=0.95, help="Lambda for the GAE advantage calculation.")
     parser.add_argument("--clip-epsilon", type=float, default=0.2, help="Clipping parameter epsilon for PPO.")
     parser.add_argument("--hidden-dim", type=int, default=256, help="Dimension of the hidden layers.")
 
     # --- SAGI-PPO 专属参数 ---
-    parser.add_argument("--cost-limit", type=float, default=30.0, help="Cost limit 'd' for SAGI-PPO.")
+    parser.add_argument("--cost-limit", type=float, default=90.0, help="Cost limit 'd' for SAGI-PPO.")
     
     args = parser.parse_args()
     return args

@@ -114,3 +114,17 @@ class TrafficEnv(gym.Env):
 
     def _get_info(self):
         return {"agent_speed": self.rl_agent.get_current_speed() if self.rl_agent else 0}
+
+    @property
+    def agent_vehicle(self):
+        """返回场景中的RL Agent车辆对象。"""
+        # 正确的做法是从 traffic_manager 中获取车辆列表
+        if self.traffic_manager and self.traffic_manager.vehicles:
+            for vehicle in self.traffic_manager.vehicles: # <--- 修改: 从 self.traffic_manager.vehicles 遍历
+                # 在RLVehicle的step方法中 is_rl_agent属性已经没有了
+                # if hasattr(vehicle, 'is_rl_agent') and vehicle.is_rl_agent:
+                #     return vehicle
+                if isinstance(vehicle, RLVehicle):
+                    return vehicle
+
+        return None
