@@ -47,9 +47,9 @@ from ppo import PPOAgent
 def parse_args():
     """解析命令行参数"""
     parser = argparse.ArgumentParser(description="Evaluate a trained PPO/SAGI-PPO agent.")
-    parser.add_argument("--algo", type=str, default="sagi_ppo", choices=["sagi_ppo", "ppo"],
+    parser.add_argument("--algo", type=str, default="ppo", choices=["sagi_ppo", "ppo"],
                         help="The algorithm of the trained agent to evaluate.")
-    parser.add_argument("--model-dir", type=str,  default="models/sagi_ppo_20250820-183834",
+    parser.add_argument("--model-dir", type=str,  default="models/ppo_20250824-233709",
                         help="Path to the directory containing the saved model files (e.g., 'models/sagi_ppo_YYYYMMDD-HHMMSS').")
     parser.add_argument("--num-episodes", type=int, default=1, 
                         help="Number of episodes to run for evaluation.")
@@ -132,7 +132,6 @@ def main():
                     episode_reward += reward
                     episode_cost += info.get('cost', 0)
                     episode_len += 1
-                    
                     done = terminated or truncated
                     if done:
                         # 记录回合结果
@@ -150,17 +149,15 @@ def main():
                             eval_stats["success"] += 1
                             print("结果: 成功 (Success)")
                         # --- 回合结束，保存该回合的详细日志 ---
-                        agent_vehicle = env.agent_vehicle
-                        if agent_vehicle and agent_vehicle.debug_log:
-                            # 1. 将log列表转换为DataFrame
-                            log_df = pd.DataFrame(agent_vehicle.debug_log)
-                            
+                        if "episode_log" in info and info["episode_log"]:
+                            log_df = pd.DataFrame(info["episode_log"])
+
                             # 2. 定义文件名
                             outcome = "success"
                             if info.get('failure') == 'collision': outcome = "collision"
                             elif truncated: outcome = "timeout"
                             log_filename = f"episode_{i+1}_{current_scenario}_{outcome}.csv"
-                            
+
                             # 3. 保存文件
                             log_filepath = os.path.join(log_save_dir, log_filename)
                             log_df.to_csv(log_filepath, index=False)

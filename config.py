@@ -71,3 +71,5 @@ MAX_ACCELERATION = 3.0  # agent可以输出的最大加速度 (m/s^2)
 MAX_STEERING_ANGLE = np.deg2rad(30) # agent可以输出的最大转向角 (弧度)
 OBSERVATION_RADIUS = 80.0 # 观测周围车辆的半径 (米)
 NUM_OBSERVED_VEHICLES = 3 # 最多观测周围5辆车
+OBSERVATION_DIM = 6 + 4 * NUM_OBSERVED_VEHICLES # 6 (自身状态) + 4 * N (每辆车的状态)
+MAX_RELEVANT_CTE = 15.0 # 最大相关横向误差

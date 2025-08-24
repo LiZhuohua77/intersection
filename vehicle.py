@@ -731,7 +731,7 @@ class RLVehicle(Vehicle):
         self.heading_error = (self.state['psi'] - path_angle + np.pi) % (2 * np.pi) - np.pi
 
         path_state = [
-            self.cross_track_error / (self.road.lane_width * 2), # 归一化横向误差
+            np.tanh(self.cross_track_error / MAX_RELEVANT_CTE), # 归一化横向误差
             self.heading_error / np.pi,                         # 归一化航向角误差
             self.get_current_longitudinal_pos() / self.path_distances[-1] # 路径完成度
         ]
@@ -829,19 +829,22 @@ class RLVehicle(Vehicle):
         return P_elec_kW
 
     def calculate_reward(self, action, is_collision, is_baseline_agent):
+        """
+        计算当前状态下的奖励,在这里添加了某项奖励之后,去step函数的log_entry中增加相应的指标
+        """
         # --- 建议的权重参数 ---
-        W_PROGRESS = 100.0        # [新增] 进度奖励权重
+        W_PROGRESS = 2       # [新增] 进度奖励权重
         W_VELOCITY = 3         # 速度跟踪奖励权重
-        VELOCITY_STD = 5.0  
+        VELOCITY_STD = 5  
         W_TIME = -0.0            # 时间惩罚 (每步-0.1分)
-        W_ACTION_SMOOTH = -0.2   # 动作平滑度惩罚权重
+        W_ACTION_SMOOTH = -1   # 动作平滑度惩罚权重
         
         R_SUCCESS = 500.0        # 成功奖励
         R_COLLISION = -500.0     # 碰撞惩罚
-        W_COST_PENALTY = -0.1   # (仅用于PPO baseline) 成本惩罚权重
+        W_COST_PENALTY = -1.5   # (仅用于PPO baseline) 成本惩罚权重
 
-        W_CTE = -1.5  # 横向误差惩罚
-        W_HEADING = 100 # 航向误差奖励
+        W_CTE = -0.3  # 横向误差惩罚
+        W_HEADING = 1 # 航向误差奖励
 
         # 期望速度，可以设为道路限速
         DESIRED_VELOCITY = GIPPS_V_DESIRED 
@@ -853,24 +856,29 @@ class RLVehicle(Vehicle):
         # [新增] 行驶进度奖励 (Progress Reward)
         current_longitudinal_pos = self.get_current_longitudinal_pos()
         progress = current_longitudinal_pos - self.last_longitudinal_pos
-        # 只有当车辆在路径上前进时才给予奖励，防止因路径计算误差导致的小幅后退产生负奖励
-        reward_components['progress'] = W_PROGRESS * max(0, progress)
+        reward_components['progress'] = W_PROGRESS * progress
         # 效率奖励 (核心修改)
         current_speed = self.state['vx']
         velocity_diff_sq = (current_speed - DESIRED_VELOCITY)**2
         reward_components['velocity_tracking'] = W_VELOCITY * np.exp(-velocity_diff_sq / (2 * VELOCITY_STD**2))
 
-        cte_penalty = W_CTE * (self.cross_track_error)
-        heading_reward = W_HEADING * np.cos(self.heading_error)
-        reward_components['heading_reward'] = heading_reward # 注意，现在是 reward 而不是 penalty
-        reward_components['cte_penalty'] = cte_penalty
+        W_PATH = 1.5       # 路径跟踪奖励的整体权重
+        ALPHA = 0.05       # 横向误差的敏感度系数 (调小以适应更大误差范围)
+        BETA = 0.5         # 航向误差的敏感度系数
+
+        cte_sq = self.cross_track_error**2
+        he_sq = self.heading_error**2
+
+        # 只有当误差同时很小时，这个奖励才高。任何一项误差很大，奖励都趋近于0。
+        path_reward = W_PATH * np.exp(-(ALPHA * cte_sq + BETA * he_sq))
+        reward_components['path_following'] = path_reward
         
         # 时间惩罚，鼓励车辆尽快完成任务
         reward_components['time_penalty'] = W_TIME
         
         # 舒适性奖励
         action_diff = action - self.last_action
-        smoothness_penalty = np.sum(action_diff**2)
+        smoothness_penalty = np.sum(action_diff)
         reward_components['action_smoothness'] = W_ACTION_SMOOTH * smoothness_penalty
 
         # --- 3. 处理PPO基准的成本惩罚 ---
@@ -879,7 +887,7 @@ class RLVehicle(Vehicle):
             reward_components['cost_penalty'] = W_COST_PENALTY * cost
         else:
             cost = self.calculate_cost()
-            reward_components['cost_penalty'] = W_COST_PENALTY * cost
+            reward_components['cost_penalty'] = 0
 
         # --- 4. 计算步进奖励的总和 ---
         total_reward = sum(reward_components.values())
@@ -896,8 +904,6 @@ class RLVehicle(Vehicle):
         return reward_components
 
     def calculate_cost(self):
-        # 【新增】将您提供的势函数代码放在这里
-        # 假设 self.road 是道路对象
         potential = self.road.get_potential_at_point(self.state['x'], self.state['y'], self.target_route_str)
         return potential
 
@@ -952,9 +958,11 @@ class RLVehicle(Vehicle):
             'action_steer': action[1],
             
             # 从 reward_info 字典中获取所有奖励分量
+            'reward_progress': reward_info.get('progress', 0),
             'reward_velocity_tracking': reward_info.get('velocity_tracking', 0),
+            'reward_path_following': reward_info.get('path_following', 0),
             'reward_time_penalty': reward_info.get('time_penalty', 0),
-            'reward_action_smoothness': reward_info.get('action_smoothness', 0),
+            'reward_action_smoothness_penalty': reward_info.get('action_smoothness', 0),
             'reward_cost_penalty': reward_info.get('cost_penalty', 0),
             'total_reward': total_reward, # 记录最终（可能被终局奖励覆盖的）总奖励
             

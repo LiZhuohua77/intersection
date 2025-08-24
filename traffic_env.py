@@ -65,7 +65,7 @@ class TrafficEnv(gym.Env):
 
         # 2. 定义动作和观测空间
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
-        observation_dim = 18 
+        observation_dim = OBSERVATION_DIM 
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(observation_dim,), dtype=np.float32)
 
         self.current_algo = 'sagi_ppo'
@@ -120,10 +120,7 @@ class TrafficEnv(gym.Env):
         """返回场景中的RL Agent车辆对象。"""
         # 正确的做法是从 traffic_manager 中获取车辆列表
         if self.traffic_manager and self.traffic_manager.vehicles:
-            for vehicle in self.traffic_manager.vehicles: # <--- 修改: 从 self.traffic_manager.vehicles 遍历
-                # 在RLVehicle的step方法中 is_rl_agent属性已经没有了
-                # if hasattr(vehicle, 'is_rl_agent') and vehicle.is_rl_agent:
-                #     return vehicle
+            for vehicle in self.traffic_manager.vehicles:
                 if isinstance(vehicle, RLVehicle):
                     return vehicle
 

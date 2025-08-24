@@ -88,6 +88,29 @@ class Road:
 
         self.conflict_matrix = CONFLICT_MATRIX
 
+        # --- 势能函数参数（可调） ---
+        self.eps = 0.05    # 远处平缓斜率
+        self.A = 5.0       # 近处快速增长强度
+        self.sigma = 0.2   # 快增区宽度（峰在 0.5）
+
+        # --- 查表范围与密度设置 ---
+        self.u_max = 3.0   # 只查表到 3，之后线性外推
+        n0_1 = 2000        # [0,1] 高密度
+        n1_3 = 1000        # (1,3] 次高密度
+
+        # 非均匀 t 网格：先 [0,1]，再 (1,3]
+        t0 = np.linspace(0.0, 1.0, n0_1, endpoint=True)
+        t1 = np.linspace(1.0, self.u_max, n1_3, endpoint=True)[1:]  # 去掉重复的 1.0
+        self.t_grid = np.concatenate([t0, t1])  # 递增且唯一
+
+        # 预计算积分查表：I(u) = ∫_0^{u} (eps + A * exp(-((t-0.5)/sigma)^2)) dt
+        integrand = self.eps + self.A * np.exp(-((self.t_grid - 0.5) / self.sigma) ** 2)
+        # 用累积梯形积分；I(0)=0
+        diffs = np.diff(self.t_grid)
+        avg_vals = 0.5 * (integrand[:-1] + integrand[1:])
+        self.I_grid = np.zeros_like(self.t_grid)
+        self.I_grid[1:] = np.cumsum(diffs * avg_vals)
+
         self._pre_generate_all_routes()
 
     def _calculate_offset_points(self, points, offset_distance):
@@ -840,7 +863,6 @@ class Road:
             for end in directions:
                 if start == end:
                     continue
-                # 调用get_route_points会触发计算和缓存
                 self.get_route_points(start, end)
         print("All routes pre-generated and cached.")
 
@@ -946,57 +968,49 @@ class Road:
         pygame.draw.circle(surface, (255, 255, 255), (screen_x, screen_y), point_radius + 2, 2)
 
 
+    def _potential_func(self, u):
+        """利用查表插值 + 线性外推计算势能；保持偶函数性质。"""
+        u = abs(float(u))
+        if u <= self.u_max:
+            # 在非均匀网格上插值 I(u)
+            return float(np.interp(u, self.t_grid, self.I_grid))
+        else:
+            # 线性外推：I(u) ≈ I(u_max) + eps * (u - u_max)
+            slope = self.eps + self.A * np.exp(-((self.u_max - 0.5) / self.sigma) ** 2)
+            return float(self.I_grid[-1] + (u - self.u_max) * slope)
 
     def get_potential_at_point(self, x, y, target_route_str=None):
         """
         【最终版】计算世界坐标系中任意一点(x, y)的势能值。
-        可以计算通用势场，也可以计算针对特定目标路径的势场。
-
-        Args:
-            x (float): 世界坐标x
-            y (float): 世界坐标y
-            target_route_str (str, optional): 目标路径字符串, e.g., 'S_W'. 
-                                              如果提供，则只计算相对于此路径的势能。
-                                              如果为 None，则计算通用势场（相对于最近路径）。
-
-        Returns:
-            float: 势能值
         """
         min_dist_to_centerline = float('inf')
         is_inside = False
 
-        # 如果指定了目标路径
+        # ---- 选路径/算最近中心线距离逻辑 ----
         if target_route_str and target_route_str in self.routes:
             route_data = self.routes[target_route_str]
             centerline_np = np.array([p[:2] for p in route_data["smoothed"]])
-            min_dist_to_centerline = np.min(np.linalg.norm(centerline_np - np.array([x, y]), axis=1))
+            min_dist_to_centerline = np.min(
+                np.linalg.norm(centerline_np - np.array([x, y]), axis=1)
+            )
             is_inside = min_dist_to_centerline <= self.lane_width / 2
-
-        # 如果没有指定目标路径，则使用旧的逻辑，找到最近的路径
         else:
             relevant_routes = []
             for route_data in self.routes.values():
                 bbox = route_data.get("bbox")
-                if bbox and (bbox['min_x'] - 1 < x < bbox['max_x'] + 1 and bbox['min_y'] - 1 < y < bbox['max_y'] + 1):
+                if bbox and (bbox['min_x'] - 1 < x < bbox['max_x'] + 1 and 
+                             bbox['min_y'] - 1 < y < bbox['max_y'] + 1):
                     relevant_routes.append(route_data)
-            
             if not relevant_routes:
                 relevant_routes = self.routes.values()
-
             for route_data in relevant_routes:
                 centerline_np = np.array([p[:2] for p in route_data["smoothed"]])
                 dist = np.min(np.linalg.norm(centerline_np - np.array([x, y]), axis=1))
                 if dist < min_dist_to_centerline:
                     min_dist_to_centerline = dist
                     is_inside = dist <= self.lane_width / 2
-        
-        # --- 势能计算逻辑 ---
+
+        # --- 势能计算：normalized_lateral_dist 作为自变量 u ---
         normalized_lateral_dist = min_dist_to_centerline / (self.lane_width / 2)
-        
-        if is_inside:
-            potential = normalized_lateral_dist**2
-        else:
-            dist_outside_norm = normalized_lateral_dist - 1.0
-            potential = 2 * dist_outside_norm + 1
-            
+        potential = self._potential_func(normalized_lateral_dist)
         return potential
