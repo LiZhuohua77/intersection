@@ -838,7 +838,7 @@ class RLVehicle(Vehicle):
         VELOCITY_STD = 5  
         W_TIME = -0.2            # 时间惩罚 (每步-0.2分)
         W_ACTION_SMOOTH = -1   # 动作平滑度惩罚权重
-        W_ENERGY = -0.5        # 能量消耗惩罚权重
+        W_ENERGY = -0.0        # 能量消耗惩罚权重
         R_SUCCESS = 50.0        # 成功奖励
         R_COLLISION = -50.0     # 碰撞惩罚
         W_COST_PENALTY = -1.5   # (仅用于PPO baseline) 成本惩罚权重
