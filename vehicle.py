@@ -833,18 +833,17 @@ class RLVehicle(Vehicle):
         计算当前状态下的奖励,在这里添加了某项奖励之后,去step函数的log_entry中增加相应的指标
         """
         # --- 建议的权重参数 ---
-        W_PROGRESS = 2       # [新增] 进度奖励权重
+        W_PROGRESS = 2       # 进度奖励权重
         W_VELOCITY = 3         # 速度跟踪奖励权重
         VELOCITY_STD = 5  
         W_TIME = -0.2            # 时间惩罚 (每步-0.2分)
         W_ACTION_SMOOTH = -1   # 动作平滑度惩罚权重
-        
+        W_ENERGY = -0.5        # 能量消耗惩罚权重
         R_SUCCESS = 50.0        # 成功奖励
         R_COLLISION = -50.0     # 碰撞惩罚
         W_COST_PENALTY = -1.5   # (仅用于PPO baseline) 成本惩罚权重
 
-        W_CTE = -0.3  # 横向误差惩罚
-        W_HEADING = 1 # 航向误差奖励
+
 
         # 期望速度，可以设为道路限速
         DESIRED_VELOCITY = GIPPS_V_DESIRED 
@@ -853,7 +852,7 @@ class RLVehicle(Vehicle):
         reward_components = {}
 
         # --- 2. 计算各个基础奖励分量 ---
-        # [新增] 行驶进度奖励 (Progress Reward)
+        #行驶进度奖励 (Progress Reward)
         current_longitudinal_pos = self.get_current_longitudinal_pos()
         progress = current_longitudinal_pos - self.last_longitudinal_pos
         reward_components['progress'] = W_PROGRESS * progress
@@ -880,6 +879,12 @@ class RLVehicle(Vehicle):
         action_diff = action - self.last_action
         smoothness_penalty = np.sum(action_diff**2)
         reward_components['action_smoothness'] = W_ACTION_SMOOTH * smoothness_penalty
+
+        acceleration = action[0] * MAX_ACCELERATION
+        power_consumption = self._calculate_energy_consumption(acceleration)
+        # 注意：对于再生制动，power_consumption 可能为负值，这会给予奖励而非惩罚
+        # 如果要考虑绝对能耗（不管正负），可以使用 abs(power_consumption)
+        reward_components['energy_consumption'] = W_ENERGY * power_consumption
 
         # --- 3. 处理PPO基准的成本惩罚 ---
         if is_baseline_agent:
@@ -964,6 +969,7 @@ class RLVehicle(Vehicle):
             'reward_time_penalty': reward_info.get('time_penalty', 0),
             'reward_action_smoothness_penalty': reward_info.get('action_smoothness', 0),
             'reward_cost_penalty': reward_info.get('cost_penalty', 0),
+            'reward_energy_consumption': reward_info.get('energy_consumption', 0),
             'total_reward': total_reward, # 记录最终（可能被终局奖励覆盖的）总奖励
             
             'raw_cost_potential': cost,

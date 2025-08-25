@@ -35,32 +35,53 @@
 
 import pygame
 import torch
+import time
 import os
 import argparse
 import numpy as np
 import pandas as pd
+import random
 from game_engine import GameEngine
 from traffic_env import TrafficEnv
 from sagi_ppo import SAGIPPOAgent
 from ppo import PPOAgent
+
+def set_seed(seed):
+    """设置所有可能的随机种子，确保实验可重复"""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    os.environ['PYTHONHASHSEED'] = str(seed)
 
 def parse_args():
     """解析命令行参数"""
     parser = argparse.ArgumentParser(description="Evaluate a trained PPO/SAGI-PPO agent.")
     parser.add_argument("--algo", type=str, default="ppo", choices=["sagi_ppo", "ppo"],
                         help="The algorithm of the trained agent to evaluate.")
-    parser.add_argument("--model-dir", type=str,  default="models/ppo_20250824-233709",
+    parser.add_argument("--model-dir", type=str,  default="models/ppo_20250825-173447",
                         help="Path to the directory containing the saved model files (e.g., 'models/sagi_ppo_YYYYMMDD-HHMMSS').")
     parser.add_argument("--num-episodes", type=int, default=1, 
                         help="Number of episodes to run for evaluation.")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed for reproducibility.")
     return parser.parse_args()
 
 def main():
     """主函数，用于可视化和量化评估一个训练好的 agent。"""
     args = parse_args()
     
+    # --- 设置随机种子 ---
+    set_seed(args.seed)
+    print(f"--- Setting random seed to {args.seed} ---")
+    
     # --- 2. 创建环境和游戏引擎 ---
     env = TrafficEnv()
+    # 为环境设置种子
+    env.reset(seed=args.seed)
+    
     game_engine = GameEngine(width=800, height=800) # 可以调大窗口以便观察
 
     # --- 3. 根据算法选择，创建Agent并加载模型 ---
@@ -100,6 +121,16 @@ def main():
     log_save_dir = os.path.join("evaluation_logs", model_name)
     os.makedirs(log_save_dir, exist_ok=True)
     print(f"评估日志将保存在: {log_save_dir}")
+
+    # --- 记录评估的配置信息 ---
+    eval_config_path = os.path.join(log_save_dir, "eval_config.txt")
+    with open(eval_config_path, 'w') as f:
+        f.write(f"Evaluation date: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"Algorithm: {args.algo}\n")
+        f.write(f"Model path: {args.model_dir}\n")
+        f.write(f"Number of episodes: {args.num_episodes}\n")
+        f.write(f"Seed: {args.seed}\n")
+    print(f"Evaluation configuration saved to {eval_config_path}")
 
     # --- 4. 评估主循环 ---
     eval_stats = {

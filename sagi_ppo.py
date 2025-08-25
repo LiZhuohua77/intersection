@@ -26,9 +26,6 @@ class Actor(nn.Module):
         self.apply(init_weights)
 
     def forward(self, state):
-        LOG_STD_MAX = 0
-        LOG_STD_MIN = -5 # SAC等算法常用-20，这里用-5或-10更常见
-        self.log_std.data.clamp_(LOG_STD_MIN, LOG_STD_MAX)
         mean = self.net(state)
         std = self.log_std.exp().expand_as(mean)
         dist = Normal(mean, std)
@@ -63,6 +60,8 @@ class RolloutBuffer:
         self.values_c = np.zeros(buffer_size, dtype=np.float32)
         self.dones = np.zeros(buffer_size, dtype=np.float32)
         self.ptr, self.path_start_idx = 0, 0
+        self.next_value_r = 0
+        self.next_value_c = 0        
     
     def store(self, state, action, reward, cost, done, value_r, value_c, log_prob):
         self.states[self.ptr] = state
@@ -75,13 +74,21 @@ class RolloutBuffer:
         self.log_probs[self.ptr] = log_prob
         self.ptr += 1
 
+    def finish_path(self, last_value_r, last_value_c):
+        """正确处理轨迹结束时的价值估计"""
+        if self.ptr > 0:  # 确保buffer不为空
+            self.next_value_r = last_value_r
+            self.next_value_c = last_value_c
+        
+        self.path_start_idx = self.ptr
+
     def _calculate_advantages(self, values, rewards_or_costs, dones):
         advantages = np.zeros_like(rewards_or_costs)
         last_gae_lam = 0
         for t in reversed(range(self.buffer_size)):
             if t == self.buffer_size - 1:
                 next_non_terminal = 1.0 - dones[t]
-                next_values = 0 # No next value if it's the end of buffer
+                next_values = self.next_value_r if values is self.values_r else self.next_value_c
             else:
                 next_non_terminal = 1.0 - dones[t]
                 next_values = values[t + 1]
@@ -99,7 +106,11 @@ class RolloutBuffer:
         
         returns_r = advantages_r + self.values_r
         returns_c = advantages_c + self.values_c
-        
+
+        # 添加与ppo.py相同的returns归一化
+        returns_r = (returns_r - np.mean(returns_r)) / (np.std(returns_r) + 1e-8)
+        returns_c = (returns_c - np.mean(returns_c)) / (np.std(returns_c) + 1e-8)
+
         # --- 归一化优势函数 ---
         advantages_r = (advantages_r - np.mean(advantages_r)) / (np.std(advantages_r) + 1e-8)
         advantages_c = (advantages_c - np.mean(advantages_c)) / (np.std(advantages_c) + 1e-8)
@@ -144,11 +155,10 @@ class SAGIPPOAgent:
         with torch.no_grad():
             dist = self.actor(state)
             action = dist.sample()
-            action_clipped = torch.clamp(action, -1, 1)
             log_prob = dist.log_prob(action).sum(axis=-1)
             value_r = self.critic_r(state)
             value_c = self.critic_c(state)
-        return action_clipped.numpy().flatten(), value_r.item(), value_c.item(), log_prob.item()
+        return action.numpy().flatten(), value_r.item(), value_c.item(), log_prob.item()
 
     def get_deterministic_action(self, state):
         """获取确定性动作（策略分布的均值），用于评估。"""

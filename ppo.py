@@ -59,6 +59,8 @@ class RolloutBuffer:
         self.values = np.zeros(buffer_size, dtype=np.float32)
         self.dones = np.zeros(buffer_size, dtype=np.float32)
         self.ptr = 0
+        self.path_start_idx = 0
+        self.next_value = 0 
     
     def store(self, state, action, reward, done, value, log_prob):
         self.states[self.ptr] = state
@@ -69,13 +71,23 @@ class RolloutBuffer:
         self.log_probs[self.ptr] = log_prob
         self.ptr += 1
 
+    def finish_path(self, last_value):
+        """正确处理轨迹结束时的价值估计"""
+        if self.ptr > 0:  # 确保buffer不为空
+            self.next_value = last_value
+        
+        # 添加path_start_idx初始化和更新
+        if not hasattr(self, 'path_start_idx'):
+            self.path_start_idx = 0
+        self.path_start_idx = self.ptr
+
     def calculate_advantages(self):
         advantages = np.zeros_like(self.rewards)
         last_gae_lam = 0
         for t in reversed(range(self.buffer_size)):
             if t == self.buffer_size - 1:
                 next_non_terminal = 1.0 - self.dones[t]
-                next_values = 0
+                next_values = self.next_value if hasattr(self, 'next_value') else 0
             else:
                 next_non_terminal = 1.0 - self.dones[t]
                 next_values = self.values[t + 1]
@@ -89,6 +101,7 @@ class RolloutBuffer:
         
         advantages = self.calculate_advantages()
         returns = advantages + self.values
+        returns = (returns - np.mean(returns)) / (np.std(returns) + 1e-8)
         
         # 归一化优势函数
         advantages = (advantages - np.mean(advantages)) / (np.std(advantages) + 1e-8)

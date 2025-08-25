@@ -4,6 +4,8 @@ import time
 import gymnasium as gym
 from torch.utils.tensorboard import SummaryWriter
 from traffic_env import TrafficEnv
+import numpy as np
+import random
 
 # --- 动态导入算法 ---
 from sagi_ppo import SAGIPPOAgent, RolloutBuffer as SAGIRolloutBuffer
@@ -11,6 +13,16 @@ from ppo import PPOAgent, RolloutBuffer as PPORolloutBuffer
 
 import pandas as pd
 import os
+
+def set_seed(seed):
+    """设置所有可能的随机种子，确保实验可重复"""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    os.environ['PYTHONHASHSEED'] = str(seed)
 
 def parse_args():
     """解析命令行参数"""
@@ -20,29 +32,34 @@ def parse_args():
     parser.add_argument("--algo", type=str, default="ppo", choices=["sagi_ppo", "ppo"], help="The reinforcement learning algorithm to use.")
     
     # --- 训练过程参数 ---
-    parser.add_argument("--total-episodes", type=int, default=300, help="Total episodes to train the agent.")
+    parser.add_argument("--total-episodes", type=int, default=1000, help="Total episodes to train the agent.")
     parser.add_argument("--buffer-size", type=int, default=2048, help="Size of the rollout buffer.")
     parser.add_argument("--update-epochs", type=int, default=2, help="Number of epochs to update the policy per rollout.")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")
 
     # --- 算法超参数 ---
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate for the optimizers.")
+    parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate for the optimizers.")
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor gamma.")
     parser.add_argument("--gae-lambda", type=float, default=0.95, help="Lambda for the GAE advantage calculation.")
     parser.add_argument("--clip-epsilon", type=float, default=0.2, help="Clipping parameter epsilon for PPO.")
     parser.add_argument("--hidden-dim", type=int, default=256, help="Dimension of the hidden layers.")
 
     # --- SAGI-PPO 专属参数 ---
-    parser.add_argument("--cost-limit", type=float, default=90.0, help="Cost limit 'd' for SAGI-PPO.")
+    parser.add_argument("--cost-limit", type=float, default=30.0, help="Cost limit 'd' for SAGI-PPO.")
     
     # --- 继续训练参数 ---
     parser.add_argument("--resume", action="store_true", help="Whether to resume training from a checkpoint.")
-    parser.add_argument("--model-path", type=str, default="D:\Code\intersection\models\ppo_20250824-095015", help="Path to the model directory for resuming training.")
+    parser.add_argument("--model-path", type=str, default="D:\Code\intersection\models\ppo_20250825-160710", help="Path to the model directory for resuming training.")
     
     args = parser.parse_args()
     return args
 
 def main():
     args = parse_args()
+    
+    # --- 设置随机种子 ---
+    set_seed(args.seed)
+    print(f"--- Setting random seed to {args.seed} ---")
     
     # --- 设置TensorBoard日志 ---
     run_name = f"{args.algo}_{time.strftime('%Y%m%d-%H%M%S')}"
@@ -57,6 +74,9 @@ def main():
 
     # --- 创建环境 ---
     env = TrafficEnv()
+    # 为环境设置种子
+    env.reset(seed=args.seed)
+    
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
 
@@ -117,6 +137,15 @@ def main():
             else:
                 print("Warning: Could not find model files, starting with fresh model")
 
+    # --- 保存配置信息 ---
+    config_path = os.path.join(log_dir, "config.txt")
+    with open(config_path, 'w') as f:
+        f.write(f"Algorithm: {args.algo}\n")
+        f.write(f"Seed: {args.seed}\n")
+        for key, value in vars(args).items():
+            f.write(f"{key}: {value}\n")
+    print(f"Configuration saved to {config_path}")
+    
     # --- 训练主循环（基于episode） ---
     total_timesteps = 0
     episode_count = 0
