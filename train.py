@@ -32,7 +32,7 @@ def parse_args():
     parser.add_argument("--algo", type=str, default="ppo", choices=["sagi_ppo", "ppo"], help="The reinforcement learning algorithm to use.")
     
     # --- 训练过程参数 ---
-    parser.add_argument("--total-episodes", type=int, default=1000, help="Total episodes to train the agent.")
+    parser.add_argument("--total-episodes", type=int, default=100000, help="Total episodes to train the agent.")
     parser.add_argument("--buffer-size", type=int, default=2048, help="Size of the rollout buffer.")
     parser.add_argument("--update-epochs", type=int, default=2, help="Number of epochs to update the policy per rollout.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")
@@ -205,9 +205,8 @@ def main():
         training_stats['episode_rewards'].append(episode_reward)
         training_stats['episode_costs'].append(episode_cost)
         training_stats['episode_lengths'].append(episode_len)
-        
-        # 保存前5个episode的详细日志
-        if episode < 5:
+        # 保存前1个episode的详细日志
+        if episode < 1:
             if 'episode_log' in info:
                 log_data = info['episode_log']
                 df = pd.DataFrame(log_data)
@@ -216,7 +215,7 @@ def main():
                 print(f"成功保存回合 {episode+1} 的日志到: {log_filename}")
 
         # 每100个episode保存一次中间模型
-        if (episode + 1) % 100 == 0:
+        if (episode + 1) % 10000 == 0:
             model_save_dir = f"models/{run_name}/checkpoints"
             os.makedirs(model_save_dir, exist_ok=True)
             

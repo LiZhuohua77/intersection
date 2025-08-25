@@ -61,7 +61,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate a trained PPO/SAGI-PPO agent.")
     parser.add_argument("--algo", type=str, default="ppo", choices=["sagi_ppo", "ppo"],
                         help="The algorithm of the trained agent to evaluate.")
-    parser.add_argument("--model-dir", type=str,  default="models/ppo_20250825-173447",
+    parser.add_argument("--model-dir", type=str,  default="models/ppo_20250825-203503",
                         help="Path to the directory containing the saved model files (e.g., 'models/sagi_ppo_YYYYMMDD-HHMMSS').")
     parser.add_argument("--num-episodes", type=int, default=1, 
                         help="Number of episodes to run for evaluation.")
@@ -144,7 +144,7 @@ def main():
     try:
         for i in range(args.num_episodes):
             current_scenario = scenarios[i % len(scenarios)]
-            state, info = env.reset(options={'scenario': current_scenario})
+            state, info = env.reset(options={'scenario': current_scenario, 'algo': args.algo})
             
             episode_reward, episode_cost, episode_len = 0, 0, 0
             

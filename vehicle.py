@@ -833,12 +833,12 @@ class RLVehicle(Vehicle):
         计算当前状态下的奖励,在这里添加了某项奖励之后,去step函数的log_entry中增加相应的指标
         """
         # --- 建议的权重参数 ---
-        W_PROGRESS = 2       # 进度奖励权重
+        W_PROGRESS = 4       # 进度奖励权重
         W_VELOCITY = 3         # 速度跟踪奖励权重
         VELOCITY_STD = 5  
         W_TIME = -0.2            # 时间惩罚 (每步-0.2分)
         W_ACTION_SMOOTH = -1   # 动作平滑度惩罚权重
-        W_ENERGY = -0.0        # 能量消耗惩罚权重
+        W_ENERGY = -0.1        # 能量消耗惩罚权重
         R_SUCCESS = 50.0        # 成功奖励
         R_COLLISION = -50.0     # 碰撞惩罚
         W_COST_PENALTY = -1.5   # (仅用于PPO baseline) 成本惩罚权重
@@ -926,6 +926,28 @@ class RLVehicle(Vehicle):
                 return True                
         return False
 
+    def _check_off_track(self, max_deviation):
+        """
+        检查车辆是否偏离参考路径过远
+        
+        Args:
+            max_deviation: 允许的最大横向偏差（单位：像素）
+            
+        Returns:
+            bool: 如果偏离过远返回True，否则返回False
+        """
+        current_pos = np.array([self.state['x'], self.state['y']])
+        
+        # 计算到路径中心线的最小距离
+        distances = np.linalg.norm(self.path_points_np - current_pos, axis=1)
+        min_distance = np.min(distances)
+        
+        # 如果距离超过最大允许偏差，则判定为偏离轨道
+        if min_distance > max_deviation:
+            print(f"车辆 {self.vehicle_id} 偏离轨道！距离: {min_distance:.2f}，最大允许: {max_deviation:.2f}")
+            return True
+        
+        return False
         
     def step(self, action, dt, all_vehicles, algo_name="sagi_ppo"):
         """RL Agent的核心函数，移除了越界终止。"""
@@ -934,6 +956,7 @@ class RLVehicle(Vehicle):
         # 1. 解读并执行动作
         acceleration = action[0] * MAX_ACCELERATION
         steering_angle = action[1] * MAX_STEERING_ANGLE
+        #steering_angle = action[1] * 0
         self._update_physics(acceleration * self.m, steering_angle, dt)
         
         self.state['vx'] = max(0, min(self.state['vx'], GIPPS_V_DESIRED))
@@ -943,8 +966,10 @@ class RLVehicle(Vehicle):
         # 2. 检查终止条件 (核心修改：移除了 is_out_of_bounds)
         is_collision = self._check_collision(all_vehicles)
         self._check_completion()
-        
-        terminated = self.completed or is_collision
+
+        is_off_track = self._check_off_track(max_deviation=1 * self.road.lane_width)
+
+        terminated = self.completed or is_collision or is_off_track
         truncated = self.steps_since_spawn >= self.max_episode_steps
 
         # 3. 计算奖励和新的观测值

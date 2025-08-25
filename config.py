@@ -23,8 +23,8 @@ SCREEN_HEIGHT = 800
 
 # 车辆物理参数
 VEHICLE_MASS = 1500  # kg
-VEHICLE_LF = 1.4     # 前轴到质心距离 (m)
-VEHICLE_LR = 1.5     # 后轴到质心距离 (m)
+VEHICLE_LF = 1.8     # 前轴到质心距离 (m)
+VEHICLE_LR = 1.8     # 后轴到质心距离 (m)
 VEHICLE_W = 2.0      # 车辆宽度 (m)
 VEHICLE_L = 5.0      # 车辆长度 (m)
 VEHICLE_IZ = 2500    # 绕Z轴的转动惯量 (kg*m^2)
@@ -61,7 +61,7 @@ MAX_STEER_ANGLE = np.deg2rad(30.0) # 最大方向盘转角
 # Gipps 模型参数
 GIPPS_A = 1.8               # m/s^2, 期望加速度
 GIPPS_B = -3.5              # m/s^2, 期望减速度
-GIPPS_V_DESIRED = 13.0      # m/s, 期望速度 (~54 km/h)
+GIPPS_V_DESIRED = 12.5      # m/s, 期望速度 (~54 km/h)
 GIPPS_S0 = VEHICLE_L        # m, 车辆静止时的安全距离（等于车长）
 GIPPS_TAU = 1.0             # s, 驾驶员反应时间
 GIPPS_B_HAT = -3.0          # m/s^2, 对前车减速度的估计
