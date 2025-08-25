@@ -836,11 +836,11 @@ class RLVehicle(Vehicle):
         W_PROGRESS = 2       # [新增] 进度奖励权重
         W_VELOCITY = 3         # 速度跟踪奖励权重
         VELOCITY_STD = 5  
-        W_TIME = -0.0            # 时间惩罚 (每步-0.1分)
+        W_TIME = -0.2            # 时间惩罚 (每步-0.2分)
         W_ACTION_SMOOTH = -1   # 动作平滑度惩罚权重
         
-        R_SUCCESS = 500.0        # 成功奖励
-        R_COLLISION = -500.0     # 碰撞惩罚
+        R_SUCCESS = 50.0        # 成功奖励
+        R_COLLISION = -50.0     # 碰撞惩罚
         W_COST_PENALTY = -1.5   # (仅用于PPO baseline) 成本惩罚权重
 
         W_CTE = -0.3  # 横向误差惩罚
@@ -863,7 +863,7 @@ class RLVehicle(Vehicle):
         reward_components['velocity_tracking'] = W_VELOCITY * np.exp(-velocity_diff_sq / (2 * VELOCITY_STD**2))
 
         W_PATH = 1.5       # 路径跟踪奖励的整体权重
-        ALPHA = 0.05       # 横向误差的敏感度系数 (调小以适应更大误差范围)
+        ALPHA = 0.3       # 横向误差的敏感度系数 (调小以适应更大误差范围)
         BETA = 0.5         # 航向误差的敏感度系数
 
         cte_sq = self.cross_track_error**2
@@ -878,7 +878,7 @@ class RLVehicle(Vehicle):
         
         # 舒适性奖励
         action_diff = action - self.last_action
-        smoothness_penalty = np.sum(action_diff)
+        smoothness_penalty = np.sum(action_diff**2)
         reward_components['action_smoothness'] = W_ACTION_SMOOTH * smoothness_penalty
 
         # --- 3. 处理PPO基准的成本惩罚 ---
