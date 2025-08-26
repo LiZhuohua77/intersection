@@ -202,39 +202,20 @@ class Vehicle:
     def get_current_target_speed(self, all_vehicles):
         """安全地获取当前目标速度，并在需要时用Gipps模型动态扩展缓冲区"""
         while self.current_step_index >= len(self.speed_profile_buffer):
-            # 获取前车
+            # 获取前车 - 现在只会找同一路径上的车辆
             leader = self.find_leader(all_vehicles)
             
             # 获取基础速度
-            if leader and self._should_follow_leader(leader):
-                # 只有在非交叉口情况下，或者前车确实在同一路径上时，才应用跟驰模型
+            if leader:
+                # 只有在确认是同一路径上的车辆时，才应用跟驰模型
                 base_speed = self.planner.gipps_model.calculate_target_speed(self, leader)
-                print(f"Vehicle {self.vehicle_id} following Vehicle {leader.vehicle_id}, speed={base_speed:.2f}")
+                print(f"Vehicle {self.vehicle_id} following Vehicle {leader.vehicle_id} on same path {self.move_str}, speed={base_speed:.2f}")
             else:
                 base_speed = self.v_desired
                 
             self.speed_profile_buffer.append(base_speed)
         return self.speed_profile_buffer[self.current_step_index]
         
-    def _should_follow_leader(self, leader):
-        """判断是否应该跟随前车
-        
-        在以下情况下，车辆不应该跟随前车：
-        1. 前车和本车路径不同（例如在交叉口有不同的转向意图）
-        2. 前车已经做出了让行决策，正在减速给本车让路
-        """
-        # 如果前车正在让行，不应该跟随它减速
-        if hasattr(leader, 'is_yielding') and leader.is_yielding:
-            print(f"Vehicle {self.vehicle_id} detects that leader {leader.vehicle_id} is yielding, not following its speed")
-            return False
-            
-        # 如果在交叉口附近，只有当前车与本车有完全相同路径时才跟随
-        if self.road.extended_conflict_zone.collidepoint(self.state['x'], self.state['y']):
-            if self.move_str != leader.move_str:
-                print(f"Vehicle {self.vehicle_id} and leader {leader.vehicle_id} have different paths near intersection, not following")
-                return False
-        
-        return True
 
     def insert_profile_patch(self, patch, method='min', start_index=None):
         """将补丁注入缓冲区"""
@@ -276,12 +257,16 @@ class Vehicle:
             self.decision_made = True
 
     def find_leader(self, all_vehicles, lane_width=4):
-        
+        """
+        查找本车前方同一路径上的前车
+        考虑车辆实际行驶路径，只在相同路径上查找前车
+        """
         leader = None
         min_longitudinal_dist = float('inf')
 
         ego_pos = np.array([self.state['x'], self.state['y']])
         
+        # 计算车辆在自身路径上的投影位置
         distances_to_ego = np.linalg.norm(self.path_points_np - ego_pos, axis=1)
         ego_proj_index = np.argmin(distances_to_ego)
         ego_longitudinal_pos = self.path_distances[ego_proj_index]
@@ -290,18 +275,28 @@ class Vehicle:
             if other_vehicle.vehicle_id == self.vehicle_id:
                 continue
                 
+            # 只考虑相同路径的车辆作为潜在前车
+            # 在交叉口场景，车辆需要有相同的起点和终点才被视为同路径
+            if hasattr(other_vehicle, 'move_str') and other_vehicle.move_str != self.move_str:
+                continue
+                
             other_pos = np.array([other_vehicle.state['x'], other_vehicle.state['y']])
+            
+            # 将其他车辆投影到本车的路径上
             distances_to_other = np.linalg.norm(self.path_points_np - other_pos, axis=1)
             other_proj_index = np.argmin(distances_to_other)
             
+            # 检查横向距离是否在可接受范围内（确认确实在同一车道上）
             lateral_dist = distances_to_other[other_proj_index]
             if lateral_dist > lane_width:
                 continue
 
+            # 检查纵向位置是否在前方
             other_longitudinal_pos = self.path_distances[other_proj_index]
             if other_longitudinal_pos <= ego_longitudinal_pos:
                 continue
                 
+            # 更新最近前车
             longitudinal_dist = other_longitudinal_pos - ego_longitudinal_pos
             if longitudinal_dist < min_longitudinal_dist:
                 min_longitudinal_dist = longitudinal_dist
@@ -351,7 +346,7 @@ class Vehicle:
 
     def get_safe_stopping_distance(self):
         """根据当前速度动态计算安全停车距离（制动距离+车长缓冲）"""
-        return (self.state['vx']**2) / (2 * abs(GIPPS_B)) + self.length
+        return 1.2 * (self.state['vx']**2) / (2 * abs(GIPPS_B)) + self.length
 
     def get_current_longitudinal_pos(self):
         """获取车辆在自身路径上的纵向投影距离"""
@@ -468,7 +463,7 @@ class Vehicle:
         
         # 检查是否处于让行状态
         if hasattr(self, 'is_yielding') and self.is_yielding:
-            # 获取LongitudinalPlanner实例（假设车辆有一个planner属性）
+            # 获取LongitudinalPlanner实例
             planner = self.planner if hasattr(self, 'planner') else LongitudinalPlanner({'a_max': GIPPS_A, 'b_max': GIPPS_B, 'v_desired': GIPPS_V_DESIRED}, {'N': MPC_HORIZON})
             
             # 生成让行速度曲线

@@ -101,9 +101,9 @@ class LongitudinalPlanner:
         """
         profile = []
         v = current_vx
-        
-        # 阶段一：以最大减速度减速3秒
-        decel_steps = int(2.0 / self.dt)
+
+        # 阶段一：以最大减速度减速2.5秒
+        decel_steps = int(2.4 / self.dt)
         for _ in range(decel_steps):
             v = max(0, v - self.b_max * self.dt) # 速度不低于0
             profile.append(v)
