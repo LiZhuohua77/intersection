@@ -124,10 +124,20 @@ class LongitudinalPlanner:
     def _check_intersection_yielding(self, vehicle, all_vehicles):
         """检查是否需要为交叉口让行"""
         for v in all_vehicles:
+            # 忽略自身和已经通过交叉口的车辆
             if v.vehicle_id == vehicle.vehicle_id or v.has_passed_intersection:
                 continue
-            if vehicle._does_path_conflict(v) and not vehicle.has_priority_over(v):
-                return True
+            
+            # 检查路径冲突
+            if vehicle._does_path_conflict(v):
+                # 如果对方车辆已经在让行，则我方可以大胆通过
+                if hasattr(v, 'is_yielding') and v.is_yielding:
+                    print(f"Vehicle {vehicle.vehicle_id} detects that Vehicle {v.vehicle_id} is already yielding, proceeding without slowing down")
+                    continue
+                    
+                # 否则，按照原有逻辑判断优先权
+                if not vehicle.has_priority_over(v):
+                    return True
         return False
 
     # ------------------ 公开接口 (Public API) ------------------

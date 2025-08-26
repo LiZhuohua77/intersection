@@ -2,35 +2,40 @@
 @file: evaluate.py
 @description:
 该文件是用于**评估和可视化**一个已经训练好的强化学习智能体的主脚本。
-它会加载一个指定的模型权重文件，然后在带有人机交互界面的仿真环境中运行该智能体，
-从而可以直观地、定性地评估其学习到的驾驶策略的性能和鲁棒性。
+它支持加载PPO和SAGI-PPO算法的模型权重文件，然后在带有人机交互界面的仿真环境中运行该智能体，
+从而可以直观地、定性地评估其学习到的驾驶策略的性能和鲁棒性，同时生成量化评估指标和详细日志记录。
 
 核心流程:
 
-1.  **加载模型 (Load Model):**
-    - 这是评估脚本与训练脚本最关键的区别。它首先会初始化一个与训练时结构相同的
-      `DDPGAgent`，然后调用 `agent.load_model()` 方法，从一个检查点文件（`.pth`）
-      中加载已经训练好的网络权重。
-    - **注意：** 运行前需要手动修改脚本中的 `MODEL_PATH` 变量，使其指向正确的
-      模型文件。
+1.  **命令行参数解析 (Parse Arguments):**
+    - 支持灵活的命令行参数配置，包括选择评估算法类型（PPO/SAGI-PPO）、指定模型目录路径、
+      设置评估回合数和随机种子等，提高了评估过程的可配置性和可重现性。
+    - **注意：** 通过`--model-dir`参数指定模型目录，无需手动修改脚本中的变量。
 
 2.  **环境与引擎初始化 (Environment and Engine Initialization):**
     - 同时初始化 `TrafficEnv` (仿真后端) 和 `GameEngine` (可视化前端)，
       以便能够实时看到智能体的每一个动作和环境的反馈。
+    - 设置统一的随机种子，确保实验的可重复性。
 
-3.  **评估主循环 (Evaluation Loop):**
-    - **确定性策略:** 在循环中，调用 `agent.select_action(state, add_noise=False)`
-      来获取动作。`add_noise=False` 参数至关重要，它确保了我们评估的是智能体
-      学习到的**确定性策略**，而不是其在训练时的探索行为。
-    - **场景循环测试:** 当一个回合结束后，脚本会自动从一个预设的场景列表
-      (`scenarios`) 中选择下一个场景进行测试。这允许我们系统性地、连续地评估
-      智能体在不同挑战下的表现（例如，无保护左转、应对冲突等）。
+3.  **模型加载与配置 (Model Loading):**
+    - 根据指定的算法类型，动态创建相应的智能体（PPOAgent或SAGIPPOAgent）并加载预训练模型。
+    - PPO加载actor和critic网络，SAGI-PPO则加载actor、reward critic和cost critic三个网络。
+    - 将所有网络设置为eval模式，确保评估时使用确定性策略。
 
-4.  **可视化与交互:**
-    - `GameEngine` 负责渲染仿真画面，让我们可以直观地观察智能体的驾驶行为，
-      例如它是否平稳、是否能有效避免碰撞、是否能做出合理的让行决策等。
-    - 用户仍然可以使用所有的交互快捷键（如暂停、缩放、移动视角）来仔细观察
-      智能体的行为细节。
+4.  **评估日志设置 (Evaluation Logging):**
+    - 创建专门的日志目录结构，自动记录评估配置信息。
+    - 为每个回合生成详细的CSV日志，包含状态、动作、奖励等完整轨迹数据。
+
+5.  **评估主循环 (Evaluation Loop):**
+    - **确定性策略:** 在循环中，调用`agent.get_deterministic_action(state)`来获取确定性动作，
+      确保评估的是智能体学习到的策略而不是探索行为。
+    - **场景测试:** 支持从预设的场景列表中选择场景进行测试，以评估智能体在不同情境下的表现。
+    - **统计指标:** 全面记录奖励、成本、回合长度等指标，并区分成功、碰撞和超时的结果。
+
+6.  **结果可视化与汇总 (Results Visualization):**
+    - `GameEngine`提供实时可视化界面，展示智能体的驾驶行为和环境交互。
+    - 支持用户交互控制，如暂停、缩放和移动视角等。
+    - 评估结束后，打印汇总统计数据，包括平均奖励、成本、成功率等关键指标。
 """
 
 import pygame
@@ -61,11 +66,11 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate a trained PPO/SAGI-PPO agent.")
     parser.add_argument("--algo", type=str, default="ppo", choices=["sagi_ppo", "ppo"],
                         help="The algorithm of the trained agent to evaluate.")
-    parser.add_argument("--model-dir", type=str,  default="models/ppo_20250825-203503",
+    parser.add_argument("--model-dir", type=str,  default="models/ppo_20250826-004132/checkpoints",
                         help="Path to the directory containing the saved model files (e.g., 'models/sagi_ppo_YYYYMMDD-HHMMSS').")
     parser.add_argument("--num-episodes", type=int, default=1, 
                         help="Number of episodes to run for evaluation.")
-    parser.add_argument("--seed", type=int, default=42,
+    parser.add_argument("--seed", type=int, default=123,
                         help="Random seed for reproducibility.")
     return parser.parse_args()
 
@@ -103,8 +108,8 @@ def main():
     elif args.algo == "ppo":
         print("--- Loading PPO Agent ---")
         agent = PPOAgent(state_dim=state_dim, action_dim=action_dim)
-        actor_path = os.path.join(args.model_dir, "ppo_actor.pth")
-        critic_path = os.path.join(args.model_dir, "ppo_critic.pth")
+        actor_path = os.path.join(args.model_dir, "ppo_actor_ep60000.pth")
+        critic_path = os.path.join(args.model_dir, "ppo_critic_ep60000.pth")
 
         agent.actor.load_state_dict(torch.load(actor_path))
         agent.critic.load_state_dict(torch.load(critic_path))

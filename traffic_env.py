@@ -43,6 +43,7 @@ import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 import pygame 
+import time
 
 from road import Road
 from traffic import TrafficManager
@@ -69,6 +70,9 @@ class TrafficEnv(gym.Env):
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(observation_dim,), dtype=np.float32)
 
         self.current_algo = 'sagi_ppo'
+        
+        # 是否启用场景感知模式（用于场景树生成）
+        self.scenario_aware = False  # 默认关闭，可以通过reset的options参数开启
 
     def reset(self, seed=None, options=None):
         """重置环境到初始状态，可以根据options设置特定场景。"""
@@ -77,12 +81,22 @@ class TrafficEnv(gym.Env):
         # 从options字典中获取场景名称，如果没有则默认为"random"
         scenario = options.get("scenario", "random") if options else "random"
         
+        # 检查是否启用场景感知模式
+        self.scenario_aware = options.get("scenario_aware", False) if options else False
+        
         self.traffic_manager.vehicle_id_counter = 1
         
         # 使用新的方法来设置场景并生成Agent
         self.rl_agent = self.traffic_manager.setup_scenario(scenario)
         
-        if self.rl_agent is None:
+        # 检查是否为只有背景车辆的场景
+        if self.rl_agent is None and scenario in ["east_west_traffic", "north_south_traffic"]:
+            print(f"初始化纯背景车辆场景: {scenario}")
+            # 对于只有背景车辆的场景，我们返回一个dummy观测和空的info
+            dummy_observation = np.zeros(self.observation_space.shape, dtype=np.float32)
+            info = {"is_background_only": True, "scenario": scenario}
+            return dummy_observation, info
+        elif self.rl_agent is None:
             raise RuntimeError(f"环境重置失败：无法在场景'{scenario}'中生成RL Agent。")
 
         self.current_algo = options.get("algo", "sagi_ppo") if options else "sagi_ppo"
@@ -94,7 +108,28 @@ class TrafficEnv(gym.Env):
 
     def step(self, action):
         """执行一个时间步。"""
-        # 1. RL Agent执行动作
+        # 检查是否为只有背景车辆的场景
+        if self.rl_agent is None:
+            # 对于纯背景车辆场景，我们只更新背景车辆，不涉及RL智能体
+            self.traffic_manager.update_background_traffic(self.dt)
+            
+            # 检查是否所有背景车辆都已完成路径
+            all_completed = all(vehicle.completed for vehicle in self.traffic_manager.vehicles)
+            
+            # 返回dummy观测、奖励和终止信号
+            dummy_observation = np.zeros(self.observation_space.shape, dtype=np.float32)
+            reward = 0.0
+            terminated = all_completed
+            truncated = False
+            info = {
+                "is_background_only": True,
+                "background_vehicles": len(self.traffic_manager.vehicles),
+                "completed_vehicles": len(self.traffic_manager.completed_vehicles_data)
+            }
+            
+            return dummy_observation, reward, terminated, truncated, info
+            
+        # 正常场景下的处理
         observation, reward, terminated, truncated, info = self.rl_agent.step(
             action, self.dt, self.traffic_manager.vehicles, self.current_algo
         )
@@ -108,9 +143,44 @@ class TrafficEnv(gym.Env):
         # 2. 更新所有背景车辆
         self.traffic_manager.update_background_traffic(self.dt)
         
+        # 3. 生成场景树并添加到info中（仅当指定了场景感知模式时）
+        if hasattr(self, 'scenario_aware') and self.scenario_aware:
+            # 可以提供RL Agent的未来动作计划（如果有的话）
+            ego_plan = None  # 在实际实现中，可能需要从智能体的策略中获取
+            scenario_tree = self.traffic_manager.generate_scenario_tree(
+                current_state=self._get_environment_state(),
+                ego_plan=ego_plan
+            )
+            info['scenario_tree'] = scenario_tree
+        
         info.update(self._get_info())
         
         return observation, reward, terminated, truncated, info
+        
+    def _get_environment_state(self):
+        """
+        获取当前环境的完整状态表示，用于场景树生成。
+        
+        返回:
+            dict: 包含所有车辆状态的环境状态
+        """
+        env_state = {
+            'time': time.time(),  # 当前时间戳
+            'vehicles': []
+        }
+        
+        # 收集所有车辆的状态
+        for vehicle in self.traffic_manager.vehicles:
+            vehicle_state = {
+                'id': getattr(vehicle, 'vehicle_id', 'unknown'),
+                'is_rl_agent': getattr(vehicle, 'is_rl_agent', False),
+                'state': vehicle.state.copy() if hasattr(vehicle, 'state') else {},
+                'start': vehicle.start_direction if hasattr(vehicle, 'start_direction') else 'unknown',
+                'destination': vehicle.end_direction if hasattr(vehicle, 'end_direction') else 'unknown',
+            }
+            env_state['vehicles'].append(vehicle_state)
+        
+        return env_state
 
     def _get_info(self):
         return {"agent_speed": self.rl_agent.get_current_speed() if self.rl_agent else 0}

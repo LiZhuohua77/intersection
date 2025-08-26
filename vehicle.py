@@ -150,7 +150,7 @@ class Vehicle:
         initial_psi = self.reference_path[1][2]
         self.state = {
             'x': initial_pos[0], 'y': initial_pos[1], 'psi': initial_psi,
-            'vx': 15, 'vy': 0.0, 'psi_dot': 0.0,
+            'vx': GIPPS_V_DESIRED, 'vy': 0.0, 'psi_dot': 0.0,
         }
 
         # --- 物理属性 ---
@@ -202,13 +202,39 @@ class Vehicle:
     def get_current_target_speed(self, all_vehicles):
         """安全地获取当前目标速度，并在需要时用Gipps模型动态扩展缓冲区"""
         while self.current_step_index >= len(self.speed_profile_buffer):
+            # 获取前车
             leader = self.find_leader(all_vehicles)
-            if leader:
+            
+            # 获取基础速度
+            if leader and self._should_follow_leader(leader):
+                # 只有在非交叉口情况下，或者前车确实在同一路径上时，才应用跟驰模型
                 base_speed = self.planner.gipps_model.calculate_target_speed(self, leader)
+                print(f"Vehicle {self.vehicle_id} following Vehicle {leader.vehicle_id}, speed={base_speed:.2f}")
             else:
                 base_speed = self.v_desired
+                
             self.speed_profile_buffer.append(base_speed)
         return self.speed_profile_buffer[self.current_step_index]
+        
+    def _should_follow_leader(self, leader):
+        """判断是否应该跟随前车
+        
+        在以下情况下，车辆不应该跟随前车：
+        1. 前车和本车路径不同（例如在交叉口有不同的转向意图）
+        2. 前车已经做出了让行决策，正在减速给本车让路
+        """
+        # 如果前车正在让行，不应该跟随它减速
+        if hasattr(leader, 'is_yielding') and leader.is_yielding:
+            print(f"Vehicle {self.vehicle_id} detects that leader {leader.vehicle_id} is yielding, not following its speed")
+            return False
+            
+        # 如果在交叉口附近，只有当前车与本车有完全相同路径时才跟随
+        if self.road.extended_conflict_zone.collidepoint(self.state['x'], self.state['y']):
+            if self.move_str != leader.move_str:
+                print(f"Vehicle {self.vehicle_id} and leader {leader.vehicle_id} have different paths near intersection, not following")
+                return False
+        
+        return True
 
     def insert_profile_patch(self, patch, method='min', start_index=None):
         """将补丁注入缓冲区"""
@@ -838,7 +864,7 @@ class RLVehicle(Vehicle):
         VELOCITY_STD = 5  
         W_TIME = -0.2            # 时间惩罚 (每步-0.2分)
         W_ACTION_SMOOTH = -1   # 动作平滑度惩罚权重
-        W_ENERGY = -0.1        # 能量消耗惩罚权重
+        W_ENERGY = -0.0        # 能量消耗惩罚权重
         R_SUCCESS = 50.0        # 成功奖励
         R_COLLISION = -50.0     # 碰撞惩罚
         W_COST_PENALTY = -1.5   # (仅用于PPO baseline) 成本惩罚权重
