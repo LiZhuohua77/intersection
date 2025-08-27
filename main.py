@@ -40,12 +40,10 @@ from game_engine import GameEngine
 def parse_args():
     """解析命令行参数"""
     parser = argparse.ArgumentParser(description="运行交通仿真环境")
-    parser.add_argument("--scenario", type=str, default="north_south_traffic", 
+    parser.add_argument("--scenario", type=str, default="head_on_conflict", 
                       choices=["agent_only", "protected_left_turn", "unprotected_left_turn", 
                                "head_on_conflict", "random", "east_west_traffic", "north_south_traffic"],
                       help="要加载的场景")
-    parser.add_argument("--scenario-aware", action="store_true", 
-                      help="启用场景感知模式，生成场景树")
     return parser.parse_args()
 
 def main():
@@ -61,8 +59,7 @@ def main():
     
     # 重置环境，获取初始状态
     options = {
-        'scenario': args.scenario,
-        'scenario_aware': args.scenario_aware
+        'scenario': args.scenario
     }
     observation, info = env.reset(options=options)
     
@@ -73,10 +70,6 @@ def main():
     print(f"加载场景: {args.scenario}")
     if is_background_only:
         print("【纯背景车辆模式】- 该场景没有RL智能体，仅用于观察和数据收集")
-    if args.scenario_aware:
-        print("场景感知模式已开启 - 将生成场景树用于预测分析")
-    else:
-        print("场景感知模式已关闭 - 不会生成场景树")
     
     try:
         while game_engine.is_running():

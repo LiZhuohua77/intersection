@@ -302,8 +302,8 @@ class TrafficManager:
 
         elif scenario_name == "head_on_conflict":
              # 场景：Agent从南向西左转，对向车辆从北向东也左转，测试博弈
-            agent = self.spawn_rl_agent('south', 'west')
-            bg_vehicle = Vehicle(self.road, 'north', 'east', self.vehicle_id_counter)
+            agent = self.spawn_rl_agent('south', 'north')
+            bg_vehicle = Vehicle(self.road, 'west', 'east', self.vehicle_id_counter)
             self.vehicles.append(bg_vehicle)
             self.vehicle_id_counter += 1
             print(f"背景车辆 #{bg_vehicle.vehicle_id}: 从北向东左转")

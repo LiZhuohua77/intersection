@@ -73,3 +73,5 @@ OBSERVATION_RADIUS = 80.0 # 观测周围车辆的半径 (米)
 NUM_OBSERVED_VEHICLES = 3 # 最多观测周围5辆车
 OBSERVATION_DIM = 6 + 4 * NUM_OBSERVED_VEHICLES # 6 (自身状态) + 4 * N (每辆车的状态)
 MAX_RELEVANT_CTE = 15.0 # 最大相关横向误差
+
+AGGRESSIVE_PROB = 0.1 # 背景车辆中激进驾驶员的比例

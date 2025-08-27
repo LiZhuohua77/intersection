@@ -70,7 +70,7 @@ def parse_args():
                         help="Path to the directory containing the saved model files (e.g., 'models/sagi_ppo_YYYYMMDD-HHMMSS').")
     parser.add_argument("--num-episodes", type=int, default=1, 
                         help="Number of episodes to run for evaluation.")
-    parser.add_argument("--seed", type=int, default=123,
+    parser.add_argument("--seed", type=int, default=6,
                         help="Random seed for reproducibility.")
     return parser.parse_args()
 
@@ -108,8 +108,8 @@ def main():
     elif args.algo == "ppo":
         print("--- Loading PPO Agent ---")
         agent = PPOAgent(state_dim=state_dim, action_dim=action_dim)
-        actor_path = os.path.join(args.model_dir, "ppo_actor_ep60000.pth")
-        critic_path = os.path.join(args.model_dir, "ppo_critic_ep60000.pth")
+        actor_path = os.path.join(args.model_dir, "ppo_actor_ep70000.pth")
+        critic_path = os.path.join(args.model_dir, "ppo_critic_ep70000.pth")
 
         agent.actor.load_state_dict(torch.load(actor_path))
         agent.critic.load_state_dict(torch.load(critic_path))
@@ -143,7 +143,7 @@ def main():
         "success": 0, "collision": 0, "timeout": 0
     }
     
-    scenarios = ['agent_only']
+    scenarios = ['head_on_conflict']
 
     print(f"--- 开始评估, 运行 {args.num_episodes} 个回合 ---")
     try:

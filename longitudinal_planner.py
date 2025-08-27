@@ -42,7 +42,7 @@
   则切换到执行预设的让行速度曲线；如果是 'none' 指令，则回退到默认的跟驰模型
   来控制速度。
 """
-
+import random
 import numpy as np
 from config import *
 
@@ -81,6 +81,7 @@ class LongitudinalPlanner:
         self.dt = SIMULATION_DT
         self.N = mpc_params.get('N', MPC_HORIZON) 
         self.gipps_model = GippsModel()
+        self.aggressive_prob = AGGRESSIVE_PROB
 
 
     def _generate_profile_to_target(self, current_vx, target_vx, N):
@@ -94,6 +95,11 @@ class LongitudinalPlanner:
                 v = max(target_vx, v - self.b_max * self.dt)
             profile.append(v)
         return profile
+
+    def _generate_cruise_profile(self, current_vx):
+        """【新增】生成一个以期望速度巡航的曲线"""
+        # 生成一个足够长的巡航曲线，以便后续截取
+        return self._generate_profile_to_target(current_vx, self.v_desired, self.N * 2)
 
     def _generate_yielding_profile(self, current_vx):
         """
@@ -120,6 +126,40 @@ class LongitudinalPlanner:
             profile.append(v)
             
         return profile
+
+    def get_potential_speed_profiles(self, vehicle, all_vehicles):
+        """
+        【新增核心方法 - 暴露决策树】
+        为RL Agent提供场景树：预测并返回两种可能的未来速度规划。
+        1. 保守（让行）规划
+        2. 激进（不让行/巡航）规划
+        """
+        # 默认情况下，两种规划都是巡航
+        cooperative_profile = self._generate_cruise_profile(vehicle.state['vx'])
+        aggressive_profile = self._generate_cruise_profile(vehicle.state['vx'])
+
+        # 检查是否需要让行（与 determine_action 逻辑类似）
+        if not vehicle.has_passed_intersection:
+            entry_index = vehicle.road.get_conflict_entry_index(vehicle.move_str)
+            if entry_index != -1 and vehicle.get_current_longitudinal_pos() < vehicle.path_distances[entry_index]:
+                dist_to_entry = vehicle.path_distances[entry_index] - vehicle.get_current_longitudinal_pos()
+                # 只有在决策点内，才考虑生成不同的规划
+                if dist_to_entry < vehicle.get_safe_stopping_distance():
+                    # 检查是否存在需要让行的、更高优先级的RL Agent
+                    # 注意：这里我们只关心与RL Agent的交互
+                    for v in all_vehicles:
+                        # 使用 getattr 确保安全访问 is_rl_agent 属性
+                        if getattr(v, 'is_rl_agent', False) and vehicle._does_path_conflict(v) and not vehicle.has_priority_over(v):
+                            # 找到了需要交互的RL Agent，生成两种截然不同的规划
+                            cooperative_profile = self._generate_yielding_profile(vehicle.state['vx'])
+                            # 激进规划保持巡航不变
+                            aggressive_profile = self._generate_cruise_profile(vehicle.state['vx'])
+                            break # 只考虑第一个冲突的RL Agent
+
+        return {
+            'cooperative': cooperative_profile,
+            'aggressive': aggressive_profile
+        }
 
     def _check_intersection_yielding(self, vehicle, all_vehicles):
         """检查是否需要为交叉口让行"""
@@ -153,16 +193,44 @@ class LongitudinalPlanner:
     def determine_action(self, vehicle, all_vehicles):
         """
         核心决策函数：分析情况并返回一个包含“指令”的字典。
+        【BUG修复】使用车辆内置的 "interaction_decision" 状态来实现一次性决策。
         """
         # --- 检查交叉口让行事件 ---
-        # 只有当车辆尚未承诺让行时，才进行检查，避免重复触发
         if not vehicle.has_passed_intersection and not vehicle.is_yielding:
             entry_index = vehicle.road.get_conflict_entry_index(vehicle.move_str)
             if entry_index != -1 and vehicle.get_current_longitudinal_pos() < vehicle.path_distances[entry_index]:
                 dist_to_entry = vehicle.path_distances[entry_index] - vehicle.get_current_longitudinal_pos()
                 if dist_to_entry < vehicle.get_safe_stopping_distance():
+                    
+                    # --- 步骤1: 优先处理与RL Agent的交互 ---
+                    conflicting_rl_agent = None
+                    for v in all_vehicles:
+                        if getattr(v, 'is_rl_agent', False) and vehicle._does_path_conflict(v):
+                            conflicting_rl_agent = v
+                            break
+                    
+                    if conflicting_rl_agent:
+                        # --- 【核心修改】检查是否已经做过决策 ---
+                        if vehicle.interaction_decision is None:
+                            # 尚未决策，现在进行一次性“掷骰子”
+                            a = random.random()
+                            print(f"Vehicle {vehicle.vehicle_id} ROLLS a {a:.2f}")
+                            if a > self.aggressive_prob:
+                                vehicle.interaction_decision = 'cooperative'
+                                print(f"Vehicle {vehicle.vehicle_id} DECIDES to be COOPERATIVE.")
+                            else:
+                                vehicle.interaction_decision = 'aggressive'
+                                print(f"Vehicle {vehicle.vehicle_id} DECIDES to be AGGRESSIVE.")
+
+                        # --- 根据已经做出的、被记住的决策来行动 ---
+                        if vehicle.interaction_decision == 'cooperative':
+                            yielding_profile = self._generate_yielding_profile(vehicle.state['vx'])
+                            return {'action': 'yield', 'profile': yielding_profile}
+                        elif vehicle.interaction_decision == 'aggressive':
+                            return {'action': 'none'}
+
+                    # --- 步骤2: 如果不与RL Agent交互，则按常规规则处理 ---
                     if self._check_intersection_yielding(vehicle, all_vehicles):
-                        # 指令：需要让行
                         yielding_profile = self._generate_yielding_profile(vehicle.state['vx'])
                         return {'action': 'yield', 'profile': yielding_profile}
 

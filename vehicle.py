@@ -184,7 +184,9 @@ class Vehicle:
         # 交叉口相关状态
         self.is_in_intersection = False
         self.has_passed_intersection = False
-        
+        self.interaction_decision = None
+        self.debug_info = {}
+
         # 可视化开关
         self.show_path_visualization = False
         self.show_debug = True
@@ -249,6 +251,7 @@ class Vehicle:
             if self.is_in_intersection: # 刚开出交叉口
                 self.has_passed_intersection = True
                 self.is_in_intersection = False
+                self.interaction_decision = None
         else:
             # 在交叉口内
             self.is_in_intersection = True
@@ -920,9 +923,8 @@ class RLVehicle(Vehicle):
 
         # --- 5. 根据终局状态，覆盖奖励值 ---
         if is_collision:
-            total_reward = R_COLLISION
+            total_reward += R_COLLISION #这里本来是直接等于R_COLLISION 但是感觉不太对 如果后面训练不出来的话再改回 total_reward = R_COLLISION
         if self.completed:
-            # 成功时可以给予一个较大的正奖励，也可以不给，让其依靠累积奖励
             total_reward += R_SUCCESS 
             
         reward_components['total_reward'] = total_reward
@@ -976,8 +978,8 @@ class RLVehicle(Vehicle):
         #print(f"Raw action from network: accel={action[0]:.2f}, steer={action[1]:.2f}")
         # 1. 解读并执行动作
         acceleration = action[0] * MAX_ACCELERATION
-        steering_angle = action[1] * MAX_STEERING_ANGLE
-        #steering_angle = action[1] * 0
+        #steering_angle = action[1] * MAX_STEERING_ANGLE
+        steering_angle = action[1] * 0
         self._update_physics(acceleration * self.m, steering_angle, dt)
         
         self.state['vx'] = max(0, min(self.state['vx'], GIPPS_V_DESIRED))
