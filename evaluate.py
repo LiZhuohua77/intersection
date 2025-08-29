@@ -67,12 +67,12 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate a trained PPO/SAGI-PPO agent.")
     parser.add_argument("--algo", type=str, default="ppo", choices=["sagi_ppo", "ppo"],
                         help="The algorithm of the trained agent to evaluate.")
-    parser.add_argument("--model-dir", type=str,  default="models/ppo_20250829-105336",
+    parser.add_argument("--model-dir", type=str,  default="models/ppo_20250829-181906",
                         help="Path to the directory containing the saved model files (e.g., 'models/sagi_ppo_YYYYMMDD-HHMMSS').")
     parser.add_argument("--num-episodes", type=int, default=1, 
                         help="Number of episodes to run for evaluation.")
     parser.add_argument("--seed", type=int, default=8491,
-                        help="Random seed for reproducibility.")
+                        help="Random seed for reproducibility.")#8491是激进的 233是保守的
     return parser.parse_args()
 
 def main():
@@ -144,7 +144,7 @@ def main():
         "success": 0, "collision": 0, "timeout": 0
     }
     
-    scenarios = ['agent_only']
+    scenarios = ['head_on_conflict']
 
     print(f"--- 开始评估, 运行 {args.num_episodes} 个回合 ---")
     try:

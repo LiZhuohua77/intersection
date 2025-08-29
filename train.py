@@ -200,7 +200,7 @@ def main():
     }
     
     for episode in range(args.total_episodes):
-        state, _ = env.reset(options={'scenario': 'agent_only', 'algo': args.algo})
+        state, _ = env.reset(options={'scenario': 'head_on_conflict', 'algo': args.algo})
         episode_reward = 0
         episode_cost = 0
         episode_len = 0
