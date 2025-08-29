@@ -198,12 +198,19 @@ class TrafficManager:
                 vehicle.update(dt, self.vehicles, self)
             
             if vehicle.completed:
-                print(f"车辆 #{vehicle.vehicle_id} 已完成路径")
-                self.completed_vehicles_data.append({
-                    'id': vehicle.vehicle_id,
-                    'type': 'background',
-                    'history': vehicle.get_speed_history()
-                })
+                # 【BUG修复】只有当完成的车辆是背景车时，才将其归档到 completed_vehicles_data
+                if not getattr(vehicle, 'is_rl_agent', False):
+                    print(f"背景车辆 #{vehicle.vehicle_id} 已完成路径，正在归档...")
+                    self.completed_vehicles_data.append({
+                        'id': vehicle.vehicle_id,
+                        'type': 'background',
+                        'history': vehicle.get_speed_history()
+                    })
+                else:
+                    # 如果是RL Agent完成了，只打印信息，不归档
+                    print(f"RL Agent 已完成路径。")
+                
+                # 从活动车辆列表中移除
                 self.vehicles.remove(vehicle)
     
     def get_traffic_stats(self):
@@ -319,12 +326,6 @@ class TrafficManager:
             self.vehicles.append(bg_vehicle1)
             self.vehicle_id_counter += 1
             print(f"背景车辆 #{bg_vehicle1.vehicle_id}: 从东向西直行")
-            
-            # 生成从西向东行驶的背景车辆
-            bg_vehicle2 = Vehicle(self.road, 'west', 'east', self.vehicle_id_counter)
-            self.vehicles.append(bg_vehicle2)
-            self.vehicle_id_counter += 1
-            print(f"背景车辆 #{bg_vehicle2.vehicle_id}: 从西向东直行")
             
             # 没有RL智能体的场景需要返回None
             return None

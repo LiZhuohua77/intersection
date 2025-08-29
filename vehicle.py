@@ -186,6 +186,8 @@ class Vehicle:
         self.has_passed_intersection = False
         self.interaction_decision = None
         self.debug_info = {}
+        self.priority_log = {}
+        self.decision_lock = {}
 
         # 可视化开关
         self.show_path_visualization = False
@@ -407,17 +409,44 @@ class Vehicle:
     def has_priority_over(self, other_vehicle):
         """
         判断本车(self)是否比另一辆车(other_vehicle)具有更高通行优先级。
+        增加决策锁定机制以防止高频振荡。
         """
+        # 检查是否存在决策锁
+        if other_vehicle.vehicle_id in self.decision_lock:
+            lock_info = self.decision_lock[other_vehicle.vehicle_id]
+            # 如果锁未过期（例如，基于时间或车辆已移动距离），则直接返回锁定的决策
+            # 这里用一个简单的计数器作为示例，比如锁定50个仿真步
+            if lock_info['steps_left'] > 0:
+                lock_info['steps_left'] -= 1
+                return lock_info['decision']
+            else:
+                # 锁过期，移除
+                del self.decision_lock[other_vehicle.vehicle_id]
+
+        # 辅助函数，用于检查、记录打印和设置决策锁
+        def log_lock_and_return(decision, rule_id, message):
+            if self.priority_log.get(other_vehicle.vehicle_id) != rule_id:
+                print(message)
+                self.priority_log[other_vehicle.vehicle_id] = rule_id
+                # 当决策发生改变时，设置一个新的决策锁
+                self.decision_lock[other_vehicle.vehicle_id] = {
+                    'decision': decision,
+                    'steps_left': 50  # 锁定决策50个仿真步
+                }
+            return decision
+
         # 规则1: Time-based FCFS（先进入冲突区的先通过）
         my_entry_time = self._estimate_entry_time()
         other_entry_time = other_vehicle._estimate_entry_time()
         
-        if my_entry_time < other_entry_time:
-            print(f"Priority: Vehicle {self.vehicle_id} has priority over {other_vehicle.vehicle_id} using Rule 1 (Time-based FCFS)")
-            return True
-        if my_entry_time > other_entry_time:
-            print(f"Priority: Vehicle {self.vehicle_id} yields to {other_vehicle.vehicle_id} using Rule 1 (Time-based FCFS)")
-            return False
+        # 增加一个小的容差(hysteresis)来防止因浮点数精度问题导致的抖动
+        time_diff = my_entry_time - other_entry_time
+        if time_diff < -0.1: # 我方明显更快
+            return log_lock_and_return(True, "R1_Win", f"Priority: Vehicle {self.vehicle_id} has priority over {other_vehicle.vehicle_id} using Rule 1 (Time-based FCFS)")
+        if time_diff > 0.1: # 对方明显更快
+            return log_lock_and_return(False, "R1_Lose", f"Priority: Vehicle {self.vehicle_id} yields to {other_vehicle.vehicle_id} using Rule 1 (Time-based FCFS)")
+        
+        # 如果时间差在容差范围内，则进入下一条规则
         
         # 规则2: Direction Priority（直 > 右 > 左）
         priority_map = {'straight': 3, 'right': 2, 'left': 1}
@@ -425,24 +454,21 @@ class Vehicle:
         other_priority = priority_map[other_vehicle._get_maneuver_type()]
         
         if my_priority > other_priority:
-            print(f"Priority: Vehicle {self.vehicle_id} has priority over {other_vehicle.vehicle_id} using Rule 2 (Direction Priority)")
-            return True
+            return log_lock_and_return(True, "R2_Win", f"Priority: Vehicle {self.vehicle_id} has priority over {other_vehicle.vehicle_id} using Rule 2 (Direction Priority)")
         if my_priority < other_priority:
-            print(f"Priority: Vehicle {self.vehicle_id} yields to {other_vehicle.vehicle_id} using Rule 2 (Direction Priority)")
-            return False
+            return log_lock_and_return(False, "R2_Lose", f"Priority: Vehicle {self.vehicle_id} yields to {other_vehicle.vehicle_id} using Rule 2 (Direction Priority)")
         
         # 规则3: Right-of-Way（让右）
         right_of_map = {'west': 'south', 'south': 'east', 'east': 'north', 'north': 'west'}
         if right_of_map.get(other_vehicle.start_direction) == self.start_direction:
-            print(f"Priority: Vehicle {self.vehicle_id} has priority over {other_vehicle.vehicle_id} using Rule 3 (Right-of-Way)")
-            return True
+            return log_lock_and_return(True, "R3_Win", f"Priority: Vehicle {self.vehicle_id} has priority over {other_vehicle.vehicle_id} using Rule 3 (Right-of-Way)")
         if right_of_map.get(self.start_direction) == other_vehicle.start_direction:
-            print(f"Priority: Vehicle {self.vehicle_id} yields to {other_vehicle.vehicle_id} using Rule 3 (Right-of-Way)")
-            return False
+            return log_lock_and_return(False, "R3_Lose", f"Priority: Vehicle {self.vehicle_id} yields to {other_vehicle.vehicle_id} using Rule 3 (Right-of-Way)")
         
         # 平级处理，默认不具备优先权
-        print(f"Priority: Vehicle {self.vehicle_id} yields to {other_vehicle.vehicle_id} using default rule")
-        return False
+        return log_lock_and_return(False, "Default_Lose", f"Priority: Vehicle {self.vehicle_id} yields to {other_vehicle.vehicle_id} using default rule")
+
+
 
     def _estimate_entry_time(self):
         """
@@ -765,9 +791,9 @@ class RLVehicle(Vehicle):
             print(f"Warning: High lateral speed {ego_observation[1]} detected for vehicle {self.vehicle_id}")
         # --- 2. 周围车辆状态 (Surrounding Vehicles State) ---
         surrounding_obs = self._get_surrounding_vehicles_observation(all_vehicles)
-
+        scenario_tree_obs = self._get_scenario_tree_observation(all_vehicles)
         # --- 3. 组合成最终的扁平化向量 ---
-        observation = np.array(ego_observation + surrounding_obs, dtype=np.float32)
+        observation = np.array(ego_observation + surrounding_obs + scenario_tree_obs, dtype=np.float32)
         return observation
 
     def _get_surrounding_vehicles_observation(self, all_vehicles):
@@ -811,6 +837,55 @@ class RLVehicle(Vehicle):
             surrounding_obs_flat.extend([0.0] * padding_len)
             
         return surrounding_obs_flat
+
+
+    def _get_scenario_tree_observation(self, all_vehicles):
+        """
+        【新增】获取关键交互车辆的未来速度规划作为场景树。
+        """
+        # 定义场景树的长度（例如，观测未来2.4秒）
+        PROFILE_HORIZON_SECONDS = SCENARIO_TREE_LENGTH
+        PROFILE_LENGTH = int(PROFILE_HORIZON_SECONDS / (4 * SIMULATION_DT))
+
+        # 默认情况下，两个规划都是空（用0填充）
+        cooperative_profile = [0.0] * PROFILE_LENGTH
+        aggressive_profile = [0.0] * PROFILE_LENGTH
+
+        # 寻找一个即将与之发生冲突的、由规则驱动的NPC车辆
+        conflicting_npc = None
+        for v in all_vehicles:
+            # 必须是NPC, 且与我方路径冲突, 且对方还未通过交叉口
+            if not getattr(v, 'is_rl_agent', False) and self._does_path_conflict(v) and not v.has_passed_intersection:
+                # 简单起见，我们只考虑第一个找到的冲突车辆
+                conflicting_npc = v
+                break
+        
+        if conflicting_npc and conflicting_npc.planner:
+            # 如果找到了冲突的NPC，调用其规划器获取两种可能的未来
+            potential_profiles = conflicting_npc.planner.get_potential_speed_profiles(conflicting_npc, all_vehicles)
+            
+            # 截取并归一化两种速度曲线
+            coop_raw = potential_profiles['cooperative'][:PROFILE_LENGTH]
+            agg_raw = potential_profiles['aggressive'][:PROFILE_LENGTH]
+
+            if len(coop_raw) > PROFILE_LENGTH:
+                indices = np.linspace(0, len(coop_raw) - 1, PROFILE_LENGTH, dtype=int)
+                coop_sampled = [coop_raw[i] for i in indices]
+                agg_sampled = [agg_raw[i] for i in indices]
+            else: # 如果原始曲线比目标还短，直接使用
+                coop_sampled = coop_raw
+                agg_sampled = agg_raw
+
+            # 归一化 (除以期望速度)
+            cooperative_profile = [v / GIPPS_V_DESIRED for v in coop_sampled]
+            aggressive_profile = [v / GIPPS_V_DESIRED for v in agg_sampled]
+
+            # 填充，以防生成的曲线不够长
+            cooperative_profile += [0.0] * (PROFILE_LENGTH - len(cooperative_profile))
+            aggressive_profile += [0.0] * (PROFILE_LENGTH - len(aggressive_profile))
+
+        # 将两条曲线展平并拼接
+        return cooperative_profile + aggressive_profile
 
     def _calculate_energy_consumption(self, commanded_accel):
         """
@@ -857,12 +932,12 @@ class RLVehicle(Vehicle):
         计算当前状态下的奖励,在这里添加了某项奖励之后,去step函数的log_entry中增加相应的指标
         """
         # --- 建议的权重参数 ---
-        W_PROGRESS = 4       # 进度奖励权重
-        W_VELOCITY = 3         # 速度跟踪奖励权重
+        #W_PROGRESS = 4       # 进度奖励权重
+        W_VELOCITY = 8         # 速度跟踪奖励权重
         VELOCITY_STD = 5  
-        W_TIME = -0.2            # 时间惩罚 (每步-0.2分)
+        W_TIME = -0            # 时间惩罚 (每步-0.2分)
         W_ACTION_SMOOTH = -1   # 动作平滑度惩罚权重
-        W_ENERGY = -0.0        # 能量消耗惩罚权重
+        W_ENERGY = -0.01        # 能量消耗惩罚权重
         R_SUCCESS = 50.0        # 成功奖励
         R_COLLISION = -50.0     # 碰撞惩罚
         W_COST_PENALTY = -1.5   # (仅用于PPO baseline) 成本惩罚权重
@@ -879,7 +954,7 @@ class RLVehicle(Vehicle):
         #行驶进度奖励 (Progress Reward)
         current_longitudinal_pos = self.get_current_longitudinal_pos()
         progress = current_longitudinal_pos - self.last_longitudinal_pos
-        reward_components['progress'] = W_PROGRESS * progress
+        #reward_components['progress'] = W_PROGRESS * progress
         # 效率奖励 (核心修改)
         current_speed = self.state['vx']
         velocity_diff_sq = (current_speed - DESIRED_VELOCITY)**2
@@ -978,8 +1053,8 @@ class RLVehicle(Vehicle):
         #print(f"Raw action from network: accel={action[0]:.2f}, steer={action[1]:.2f}")
         # 1. 解读并执行动作
         acceleration = action[0] * MAX_ACCELERATION
-        #steering_angle = action[1] * MAX_STEERING_ANGLE
-        steering_angle = action[1] * 0
+        steering_angle = action[1] * MAX_STEERING_ANGLE
+        #steering_angle = action[1] * 0
         self._update_physics(acceleration * self.m, steering_angle, dt)
         
         self.state['vx'] = max(0, min(self.state['vx'], GIPPS_V_DESIRED))
@@ -1034,6 +1109,8 @@ class RLVehicle(Vehicle):
 
         # --- 8. 准备并返回所有信息 ---
         info = {"cost": cost, 'failure': 'collision' if is_collision else None}
+        # 将详细的奖励分量添加到info字典中，以便在训练脚本中记录
+        info.update({f"reward_{k}": v for k, v in reward_info.items()})
         
         return observation, total_reward, terminated, truncated, info
 

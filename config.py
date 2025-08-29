@@ -45,9 +45,9 @@ ROLLING_RESISTANCE_COEFFICIENT = 0.015
 GRAVITATIONAL_ACCEL = 9.81
 
 # PID 控制器参数
-PID_KP = 1000.0  # 比例增益 (将速度误差m/s转换为力N)
-PID_KI = 50.0
-PID_KD = 100.0
+PID_KP = 12000.0  # 比例增益 (将速度误差m/s转换为力N)
+PID_KI = 800
+PID_KD = 100
 PID_INTEGRAL_MAX = 5000.0 # 积分抗饱和上限
 
 # MPC 控制器参数
@@ -68,10 +68,14 @@ GIPPS_B_HAT = -3.0          # m/s^2, 对前车减速度的估计
 
 # agent参数
 MAX_ACCELERATION = 3.0  # agent可以输出的最大加速度 (m/s^2)
-MAX_STEERING_ANGLE = np.deg2rad(30) # agent可以输出的最大转向角 (弧度)
+MAX_STEERING_ANGLE = np.deg2rad(0) # agent可以输出的最大转向角 (弧度)
 OBSERVATION_RADIUS = 80.0 # 观测周围车辆的半径 (米)
-NUM_OBSERVED_VEHICLES = 3 # 最多观测周围5辆车
-OBSERVATION_DIM = 6 + 4 * NUM_OBSERVED_VEHICLES # 6 (自身状态) + 4 * N (每辆车的状态)
+NUM_OBSERVED_VEHICLES = 1 # 最多观测周围5辆车
+
 MAX_RELEVANT_CTE = 15.0 # 最大相关横向误差
 
-AGGRESSIVE_PROB = 0.1 # 背景车辆中激进驾驶员的比例
+AGGRESSIVE_PROB = 0.5 # 背景车辆中激进驾驶员的比例
+SCENARIO_TREE_LENGTH = 2.4 # 场景树的长度 (时间步数)，例如2.4秒
+
+
+OBSERVATION_DIM = 6 + 4 * NUM_OBSERVED_VEHICLES + 2*int(SCENARIO_TREE_LENGTH/(4 * SIMULATION_DT))# 6 (自身状态) + 4 * N (每辆车的状态)

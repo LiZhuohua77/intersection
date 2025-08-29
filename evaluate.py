@@ -46,6 +46,7 @@ import argparse
 import numpy as np
 import pandas as pd
 import random
+import matplotlib.pyplot as plt
 from game_engine import GameEngine
 from traffic_env import TrafficEnv
 from sagi_ppo import SAGIPPOAgent
@@ -66,11 +67,11 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate a trained PPO/SAGI-PPO agent.")
     parser.add_argument("--algo", type=str, default="ppo", choices=["sagi_ppo", "ppo"],
                         help="The algorithm of the trained agent to evaluate.")
-    parser.add_argument("--model-dir", type=str,  default="models/ppo_20250826-004132/checkpoints",
+    parser.add_argument("--model-dir", type=str,  default="models/ppo_20250829-105336",
                         help="Path to the directory containing the saved model files (e.g., 'models/sagi_ppo_YYYYMMDD-HHMMSS').")
     parser.add_argument("--num-episodes", type=int, default=1, 
                         help="Number of episodes to run for evaluation.")
-    parser.add_argument("--seed", type=int, default=6,
+    parser.add_argument("--seed", type=int, default=8491,
                         help="Random seed for reproducibility.")
     return parser.parse_args()
 
@@ -108,8 +109,8 @@ def main():
     elif args.algo == "ppo":
         print("--- Loading PPO Agent ---")
         agent = PPOAgent(state_dim=state_dim, action_dim=action_dim)
-        actor_path = os.path.join(args.model_dir, "ppo_actor_ep70000.pth")
-        critic_path = os.path.join(args.model_dir, "ppo_critic_ep70000.pth")
+        actor_path = os.path.join(args.model_dir, "ppo_actor.pth")
+        critic_path = os.path.join(args.model_dir, "ppo_critic.pth")
 
         agent.actor.load_state_dict(torch.load(actor_path))
         agent.critic.load_state_dict(torch.load(critic_path))
@@ -143,7 +144,7 @@ def main():
         "success": 0, "collision": 0, "timeout": 0
     }
     
-    scenarios = ['head_on_conflict']
+    scenarios = ['agent_only']
 
     print(f"--- 开始评估, 运行 {args.num_episodes} 个回合 ---")
     try:
@@ -198,6 +199,65 @@ def main():
                             log_filepath = os.path.join(log_save_dir, log_filename)
                             log_df.to_csv(log_filepath, index=False)
                             print(f"日志已保存到: {log_filepath}")
+                        # --- 【新增】绘制并显示该回合的速度曲线图 ---
+                        plt.figure(figsize=(12, 6))
+                        
+                        # 1. 绘制RL Agent的速度曲线
+                        if hasattr(env, 'rl_agent') and env.rl_agent:
+                            speed_curve = env.rl_agent.get_speed_history()
+                            if speed_curve:
+                                plt.subplot(1, 2, 1)
+                                plt.plot(speed_curve, 'r-', linewidth=2, label="RL Agent")
+                                plt.title(f"RL Agent Speed Curve (Episode {i+1})")
+                                plt.xlabel("Time Step")
+                                plt.ylabel("Speed (m/s)")
+                                plt.grid(True)
+                                plt.xlim(0, len(speed_curve))
+                                plt.ylim(0, 15)  # 设置y轴范围
+                                plt.legend()
+
+                        # 2. 【核心修改】绘制所有背景车辆（已完成 + 仍在活动）的速度曲线
+                        # 创建一个统一的列表来存放所有背景车的数据
+                        all_npc_data = []
+
+                        # 首先，添加已经完成并归档的车辆
+                        completed_vehicles = env.traffic_manager.completed_vehicles_data
+                        if completed_vehicles:
+                            all_npc_data.extend(completed_vehicles)
+
+                        # 其次，遍历当前仍在活动的车辆，将它们的数据也添加进来
+                        active_vehicles = env.traffic_manager.vehicles
+                        for vehicle in active_vehicles:
+                            # 确保它不是RL Agent
+                            if not getattr(vehicle, 'is_rl_agent', False):
+                                all_npc_data.append({
+                                    'id': vehicle.vehicle_id,
+                                    'history': vehicle.get_speed_history()
+                                })
+                        
+                        # 如果收集到了任何背景车数据，就进行绘制
+                        if all_npc_data:
+                            # 如果左侧没有图，则创建新图；否则在右侧创建子图
+                            if not (hasattr(env, 'rl_agent') and env.rl_agent and env.rl_agent.get_speed_history()):
+                                plt.figure(figsize=(10, 6))
+                            else:
+                                plt.subplot(1, 2, 2)
+
+                            for vehicle_data in all_npc_data:
+                                vehicle_history = vehicle_data['history']
+                                if vehicle_history:
+                                    plt.plot(vehicle_history, label=f"NPC #{vehicle_data['id']}")
+                            plt.title(f"Background Vehicles Speed Curves (Episode {i+1})")
+                            plt.xlabel("Time Step")
+                            plt.ylabel("Speed (m/s)")
+                            plt.grid(True)
+                            plt.xlim(0, max(len(h['history']) for h in all_npc_data))
+                            plt.ylim(0, 15)  # 设置y轴范围
+                            plt.legend(loc='best', fontsize='small')
+                        
+                        plt.tight_layout()
+                        plt.show()
+
                         break # 结束当前回合的循环
                 
                 game_engine.render(env)

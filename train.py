@@ -74,7 +74,7 @@ def parse_args():
     parser.add_argument("--algo", type=str, default="ppo", choices=["sagi_ppo", "ppo"], help="The reinforcement learning algorithm to use.")
     
     # --- 训练过程参数 ---
-    parser.add_argument("--total-episodes", type=int, default=100000, help="Total episodes to train the agent.")
+    parser.add_argument("--total-episodes", type=int, default=3000, help="Total episodes to train the agent.")
     parser.add_argument("--buffer-size", type=int, default=2048, help="Size of the rollout buffer.")
     parser.add_argument("--update-epochs", type=int, default=2, help="Number of epochs to update the policy per rollout.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")
@@ -91,7 +91,7 @@ def parse_args():
     
     # --- 继续训练参数 ---
     parser.add_argument("--resume", action="store_true", help="Whether to resume training from a checkpoint.")
-    parser.add_argument("--model-path", type=str, default="D:\Code\intersection\models\ppo_20250825-160710", help="Path to the model directory for resuming training.")
+    parser.add_argument("--model-path", type=str, default="D:\Code\intersection\models\ppo_20250829-083302", help="Path to the model directory for resuming training.")
     
     args = parser.parse_args()
     return args
@@ -204,6 +204,7 @@ def main():
         episode_reward = 0
         episode_cost = 0
         episode_len = 0
+        episode_reward_components = {}  # 用于累积各奖励分量
         done = False
         
         while not done:
@@ -217,6 +218,10 @@ def main():
             next_state, reward, terminated, truncated, info = env.step(action)
             cost = info.get('cost', 0)
             done = terminated or truncated
+
+            for key, value in info.items():
+                if key.startswith('reward_'):
+                    episode_reward_components[key] = episode_reward_components.get(key, 0) + value
             
             # 存储经验
             if args.algo == "sagi_ppo":
@@ -242,7 +247,14 @@ def main():
         writer.add_scalar("charts/episode_cost", episode_cost, episode)
         writer.add_scalar("charts/episode_length", episode_len, episode)
         writer.add_scalar("charts/total_timesteps", total_timesteps, episode)
-        
+
+        if episode_len > 0:
+            for key, total_value in episode_reward_components.items():
+                # 去掉 'reward_' 前缀，并计算平均值
+                metric_name = key[len('reward_'):]
+                avg_value = total_value / episode_len
+                writer.add_scalar(f"rewards/{metric_name}", avg_value, episode)
+
         # 保存训练统计信息
         training_stats['episode_rewards'].append(episode_reward)
         training_stats['episode_costs'].append(episode_cost)
