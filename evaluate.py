@@ -1,41 +1,22 @@
 """
 @file: evaluate.py
 @description:
-该文件是用于**评估和可视化**一个已经训练好的强化学习智能体的主脚本。
-它支持加载PPO和SAGI-PPO算法的模型权重文件，然后在带有人机交互界面的仿真环境中运行该智能体，
-从而可以直观地、定性地评估其学习到的驾驶策略的性能和鲁棒性，同时生成量化评估指标和详细日志记录。
+该文件用于评估和可视化已训练好的强化学习智能体在交通场景中的表现。
+支持加载PPO和SAGI-PPO算法的模型，在可视化仿真环境中运行并评估智能体性能，
+生成量化指标并记录详细日志数据。
+
+主要函数:
+- set_seed(seed): 设置所有随机数生成器的种子，确保实验可重复性
+- parse_args(): 解析命令行参数，支持配置评估算法类型、模型路径、评估回合数等
+- main(): 主函数，执行完整评估流程，包括模型加载、环境初始化、评估循环和结果统计
 
 核心流程:
-
-1.  **命令行参数解析 (Parse Arguments):**
-    - 支持灵活的命令行参数配置，包括选择评估算法类型（PPO/SAGI-PPO）、指定模型目录路径、
-      设置评估回合数和随机种子等，提高了评估过程的可配置性和可重现性。
-    - **注意：** 通过`--model-dir`参数指定模型目录，无需手动修改脚本中的变量。
-
-2.  **环境与引擎初始化 (Environment and Engine Initialization):**
-    - 同时初始化 `TrafficEnv` (仿真后端) 和 `GameEngine` (可视化前端)，
-      以便能够实时看到智能体的每一个动作和环境的反馈。
-    - 设置统一的随机种子，确保实验的可重复性。
-
-3.  **模型加载与配置 (Model Loading):**
-    - 根据指定的算法类型，动态创建相应的智能体（PPOAgent或SAGIPPOAgent）并加载预训练模型。
-    - PPO加载actor和critic网络，SAGI-PPO则加载actor、reward critic和cost critic三个网络。
-    - 将所有网络设置为eval模式，确保评估时使用确定性策略。
-
-4.  **评估日志设置 (Evaluation Logging):**
-    - 创建专门的日志目录结构，自动记录评估配置信息。
-    - 为每个回合生成详细的CSV日志，包含状态、动作、奖励等完整轨迹数据。
-
-5.  **评估主循环 (Evaluation Loop):**
-    - **确定性策略:** 在循环中，调用`agent.get_deterministic_action(state)`来获取确定性动作，
-      确保评估的是智能体学习到的策略而不是探索行为。
-    - **场景测试:** 支持从预设的场景列表中选择场景进行测试，以评估智能体在不同情境下的表现。
-    - **统计指标:** 全面记录奖励、成本、回合长度等指标，并区分成功、碰撞和超时的结果。
-
-6.  **结果可视化与汇总 (Results Visualization):**
-    - `GameEngine`提供实时可视化界面，展示智能体的驾驶行为和环境交互。
-    - 支持用户交互控制，如暂停、缩放和移动视角等。
-    - 评估结束后，打印汇总统计数据，包括平均奖励、成本、成功率等关键指标。
+1. 命令行参数解析：配置评估参数如算法类型、模型路径等
+2. 环境与可视化引擎初始化：创建仿真环境和实时可视化界面
+3. 模型加载与配置：根据算法类型加载相应网络模型
+4. 评估日志设置：创建日志目录结构并记录配置信息
+5. 评估执行循环：使用确定性策略评估智能体在不同场景的表现
+6. 结果统计与可视化：生成性能指标统计和速度曲线等可视化图表
 """
 
 import pygame
@@ -53,7 +34,12 @@ from sagi_ppo import SAGIPPOAgent
 from ppo import PPOAgent
 
 def set_seed(seed):
-    """设置所有可能的随机种子，确保实验可重复"""
+    """
+    设置所有随机数生成器的种子，确保实验结果的可重复性
+    
+    参数:
+        seed (int): 随机种子值
+    """
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -63,11 +49,22 @@ def set_seed(seed):
     os.environ['PYTHONHASHSEED'] = str(seed)
 
 def parse_args():
-    """解析命令行参数"""
+    """
+    解析命令行参数，配置评估过程
+    
+    返回:
+        argparse.Namespace: 包含所有解析后参数的命名空间对象
+        
+    参数说明:
+        --algo: 选择评估的算法类型 (ppo 或 sagi_ppo)
+        --model-dir: 预训练模型文件所在的目录路径
+        --num-episodes: 要运行的评估回合数
+        --seed: 随机种子，用于确保实验可重复性
+    """
     parser = argparse.ArgumentParser(description="Evaluate a trained PPO/SAGI-PPO agent.")
     parser.add_argument("--algo", type=str, default="ppo", choices=["sagi_ppo", "ppo"],
                         help="The algorithm of the trained agent to evaluate.")
-    parser.add_argument("--model-dir", type=str,  default="models/ppo_20250829-181906",
+    parser.add_argument("--model-dir", type=str,  default="models/ppo_scenario",
                         help="Path to the directory containing the saved model files (e.g., 'models/sagi_ppo_YYYYMMDD-HHMMSS').")
     parser.add_argument("--num-episodes", type=int, default=1, 
                         help="Number of episodes to run for evaluation.")
@@ -76,7 +73,19 @@ def parse_args():
     return parser.parse_args()
 
 def main():
-    """主函数，用于可视化和量化评估一个训练好的 agent。"""
+    """
+    主函数，执行完整的智能体评估流程
+    
+    功能:
+    1. 加载命令行参数并设置随机种子
+    2. 初始化交通环境和可视化引擎
+    3. 根据算法类型加载相应的预训练模型
+    4. 创建评估日志目录和配置记录
+    5. 执行评估回合，使用确定性策略在不同场景中测试智能体
+    6. 记录详细的评估数据，包括状态、动作、奖励等轨迹信息
+    7. 生成速度曲线等可视化图表
+    8. 汇总并输出评估结果，包括成功率、碰撞率等关键指标
+    """
     args = parse_args()
     
     # --- 设置随机种子 ---
@@ -101,7 +110,7 @@ def main():
         actor_path = os.path.join(args.model_dir, "sagi_ppo_actor.pth")
         critic_r_path = os.path.join(args.model_dir, "sagi_ppo_critic_r.pth")
         critic_c_path = os.path.join(args.model_dir, "sagi_ppo_critic_c.pth")
-        
+
         agent.actor.load_state_dict(torch.load(actor_path))
         agent.critic_r.load_state_dict(torch.load(critic_r_path))
         agent.critic_c.load_state_dict(torch.load(critic_c_path))
@@ -199,63 +208,60 @@ def main():
                             log_filepath = os.path.join(log_save_dir, log_filename)
                             log_df.to_csv(log_filepath, index=False)
                             print(f"日志已保存到: {log_filepath}")
-                        # --- 【新增】绘制并显示该回合的速度曲线图 ---
-                        plt.figure(figsize=(12, 6))
                         
-                        # 1. 绘制RL Agent的速度曲线
+                        # --- 绘制并显示该回合的速度曲线图 ---
+
+                        # 图1: RL Agent 的速度曲线
                         if hasattr(env, 'rl_agent') and env.rl_agent:
                             speed_curve = env.rl_agent.get_speed_history()
                             if speed_curve:
-                                plt.subplot(1, 2, 1)
-                                plt.plot(speed_curve, 'r-', linewidth=2, label="RL Agent")
-                                plt.title(f"RL Agent Speed Curve (Episode {i+1})")
+                                plt.figure(figsize=(12, 6))
+                                plt.plot(speed_curve, 'r-', linewidth=2.5, label="RL Agent")
+                                plt.title(f"RL Agent Speed Curve)")
                                 plt.xlabel("Time Step")
                                 plt.ylabel("Speed (m/s)")
                                 plt.grid(True)
                                 plt.xlim(0, len(speed_curve))
-                                plt.ylim(0, 15)  # 设置y轴范围
+                                plt.ylim(0, 15)
                                 plt.legend()
+                                plt.tight_layout()
 
-                        # 2. 【核心修改】绘制所有背景车辆（已完成 + 仍在活动）的速度曲线
-                        # 创建一个统一的列表来存放所有背景车的数据
+                        # 图2: 背景车辆的速度曲线
                         all_npc_data = []
-
-                        # 首先，添加已经完成并归档的车辆
-                        completed_vehicles = env.traffic_manager.completed_vehicles_data
-                        if completed_vehicles:
-                            all_npc_data.extend(completed_vehicles)
-
-                        # 其次，遍历当前仍在活动的车辆，将它们的数据也添加进来
-                        active_vehicles = env.traffic_manager.vehicles
-                        for vehicle in active_vehicles:
-                            # 确保它不是RL Agent
+                        # 添加已完成的车辆
+                        if env.traffic_manager.completed_vehicles_data:
+                            all_npc_data.extend(env.traffic_manager.completed_vehicles_data)
+                        # 添加仍在活动的车辆
+                        for vehicle in env.traffic_manager.vehicles:
                             if not getattr(vehicle, 'is_rl_agent', False):
                                 all_npc_data.append({
                                     'id': vehicle.vehicle_id,
                                     'history': vehicle.get_speed_history()
                                 })
                         
-                        # 如果收集到了任何背景车数据，就进行绘制
                         if all_npc_data:
-                            # 如果左侧没有图，则创建新图；否则在右侧创建子图
-                            if not (hasattr(env, 'rl_agent') and env.rl_agent and env.rl_agent.get_speed_history()):
-                                plt.figure(figsize=(10, 6))
-                            else:
-                                plt.subplot(1, 2, 2)
-
+                            plt.figure(figsize=(12, 6))
+                            max_len_npc = 0
+                            has_npc_plot = False
                             for vehicle_data in all_npc_data:
                                 vehicle_history = vehicle_data['history']
                                 if vehicle_history:
                                     plt.plot(vehicle_history, label=f"NPC #{vehicle_data['id']}")
-                            plt.title(f"Background Vehicles Speed Curves (Episode {i+1})")
-                            plt.xlabel("Time Step")
-                            plt.ylabel("Speed (m/s)")
-                            plt.grid(True)
-                            plt.xlim(0, max(len(h['history']) for h in all_npc_data))
-                            plt.ylim(0, 15)  # 设置y轴范围
-                            plt.legend(loc='best', fontsize='small')
-                        
-                        plt.tight_layout()
+                                    max_len_npc = max(max_len_npc, len(vehicle_history))
+                                    has_npc_plot = True
+                            
+                            if has_npc_plot:
+                                plt.title(f"NPC Vehicles Speed Curves")
+                                plt.xlabel("Time Step")
+                                plt.ylabel("Speed (m/s)")
+                                plt.grid(True)
+                                if max_len_npc > 0:
+                                    plt.xlim(0, max_len_npc)
+                                plt.ylim(0, 15)
+                                plt.legend(loc='best', fontsize='small')
+                                plt.tight_layout()
+
+                        # 显示所有创建的图表
                         plt.show()
 
                         break # 结束当前回合的循环

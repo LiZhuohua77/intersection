@@ -1,43 +1,24 @@
 """
 @file: road.py
-@description:
-该文件定义了一个四向交叉路口环境的静态几何结构、所有可能的车辆路径以及冲突判断逻辑。
-`Road` 类作为仿真的“地图”或“舞台”，负责处理路口的逻辑表示（路径、冲突区）和
-其在 Pygame 中的可视化渲染。
+@description: 
+此文件实现了一个四向交叉路口环境的静态几何结构、路径生成与冲突检测系统。
 
-核心职责:
+主要功能:
+1. 交叉口几何定义 - 程序化生成标准四向交叉路口布局
+2. 路径生成与处理 - 生成、平滑和缓存12种可能的行驶路线
+3. 冲突检测 - 通过预定义的冲突矩阵判断路径冲突关系
+4. 可视化渲染 - 提供一系列方法绘制道路元素到Pygame界面
+5. 势场计算 - 为任意点计算势能值，用于车辆路径规划
 
-1.  **交叉口几何定义:**
-    - `Road` 类的构造函数会根据给定的宽度、高度和车道宽度等参数，程序化地生成一个
-      标准的四向交叉路口布局。
-    - 它定义了两个关键的几何区域：`conflict_zone` (核心冲突区)，即车辆路径在物理上
-      可能发生交叉的中心区域；以及 `extended_conflict_zone` (扩展冲突区或感知区)，
-      这是一个基于安全刹车距离计算出的更大范围区域，供车辆在进入路口前进行预判和决策。
+主要类:
+- Road: 作为仿真的"地图"，负责管理交叉路口的几何表示和渲染
 
-2.  **车辆路径生成与处理:**
-    - `generate_centerline_points` 方法为所有12种可能的行驶路线（例如，从北到南、
-      从东到北）创建粗略的、分段式的参考路径点。
-    - 核心的公开接口 `get_route_points` 方法接收这些原始路径点，并通过一个复杂的
-      处理流水线（调用 `path_smoother.py` 中的功能）进行加工：
-        - **平滑化 (Smoothing):** 消除原始路径的棱角，生成平滑的曲线。
-        - **重采样 (Resampling):** 创建具有等距、高密度点的路径，这对于像MPC这样的
-          高级车辆控制器稳定跟踪至关重要。
-        - **角度重计算 (Angle Recalculation):** 为平滑路径上的每一个点计算出精确的
-          切线方向（即车辆朝向）。
-    - **边界生成**: 同时为每条路径生成对应的平滑车道边界，用于碰撞检测和奖励函数设计。
-    - 所有生成并处理完毕的路径都会被缓存，以避免重复计算，确保高效运行。
-
-3.  **冲突管理:**
-    - 文件包含一个预先计算好的 `CONFLICT_MATRIX` (冲突矩阵)。这是一个静态查找表，
-      可以即时（O(1)复杂度）判断任意两条路径是否存在冲突。
-    - 提供了如 `get_conflict_entry_index` 等方法，用于精确计算出给定路径进入
-      冲突区的第一个点的索引，这对车辆的决策时机至关重要。
-
-4.  **可视化:**
-    - 包含了一系列 `draw_*` 方法，用于将交叉口的各种元素（道路标线、冲突区域、
-      车道中心线等）渲染到 Pygame 的 surface 对象上。
-    - 所有绘图函数都接受一个 `transform_func` 坐标变换函数作为参数。这一灵活的设计
-      使得渲染逻辑与世界坐标系解耦，能够轻松支持镜头缩放、平移等高级视觉功能。
+主要函数:
+- draw_*系列函数: 处理道路元素的可视化渲染
+- generate_centerline_points: 生成原始路径点序列
+- get_route_points: 获取平滑处理后的路径数据
+- do_paths_conflict: 判断两条路径是否存在冲突
+- get_potential_at_point: 计算点的势场值，用于导航
 """
 
 import pygame
@@ -62,6 +43,18 @@ CONFLICT_MATRIX = {
 }
 class Road:
     def __init__(self, width=400, height=400, lane_width=4):
+        """
+        初始化交叉路口环境对象
+        
+        Args:
+            width (int): 场景总宽度(像素)
+            height (int): 场景总高度(像素)
+            lane_width (int): 车道宽度(像素)
+            
+        Notes:
+            - 初始化过程会建立道路几何结构、冲突区域和势场计算参数
+            - 自动预生成所有12种路径(N/S/E/W之间的组合)并缓存
+        """
         self.width = width
         self.height = height
         self.lane_width = lane_width
@@ -114,7 +107,19 @@ class Road:
         self._pre_generate_all_routes()
 
     def _calculate_offset_points(self, points, offset_distance):
-        """根据中心线点和偏移距离，计算平行线点。"""
+        """
+        根据中心线点和偏移距离，计算平行线点(用于生成车道边界)
+        
+        Args:
+            points (list): 中心线点列表，每个点为(x,y)坐标
+            offset_distance (float): 偏移距离，正值向外偏移，负值向内偏移
+            
+        Returns:
+            list: 平行偏移后的点列表
+            
+        Notes:
+            使用垂直于路径方向的法向量计算偏移点
+        """
         offset_points = []
         points_np = np.array(points, dtype=float)
         
@@ -141,7 +146,18 @@ class Road:
         return offset_points
 
     def _generate_and_process_boundaries(self, raw_centerline):
-        """根据原始中心线，生成并处理左右边界。"""
+        """
+        根据原始中心线，生成并处理左右边界
+        
+        Args:
+            raw_centerline (list): 原始中心线点列表
+            
+        Returns:
+            tuple: (左边界点列表, 右边界点列表)，经过平滑和重采样处理
+            
+        Notes:
+            边界线会经过与中心线相同的平滑和重采样流程，确保平滑过渡
+        """
         if len(raw_centerline) < 2:
             return [], []
 
@@ -161,7 +177,16 @@ class Road:
         return resampled_left, resampled_right
 
     def draw_boundaries(self, surface, transform_func=None):
-        """(调试用) 绘制所有已生成路径的逻辑车道边界。"""
+        """
+        绘制所有已生成路径的逻辑车道边界
+        
+        Args:
+            surface (pygame.Surface): 要绘制的pygame表面
+            transform_func (callable, optional): 坐标转换函数，默认为恒等映射
+            
+        Notes:
+            主要用于调试和可视化，使用淡蓝色线条表示车道边界
+        """
         if transform_func is None:
             transform_func = lambda x, y: (x, y)
         
@@ -180,7 +205,17 @@ class Road:
 
 
     def draw_conflict_zones(self, surface, transform_func=None):
-        """可视化交叉口的核心冲突区和扩展感知区"""
+        """
+        可视化交叉口的核心冲突区和扩展感知区
+        
+        Args:
+            surface (pygame.Surface): 要绘制的pygame表面
+            transform_func (callable, optional): 坐标转换函数，默认为恒等映射
+            
+        Notes:
+            - 核心冲突区(红色半透明)：车辆实际可能相撞的区域
+            - 扩展感知区(橙色边界)：车辆需要提前感知以决策的区域
+        """
         if transform_func is None:
             transform_func = lambda x, y: (x, y)
 
@@ -215,11 +250,15 @@ class Road:
         surface.blit(temp_surface, (0, 0))
 
     def draw_road_lines(self, surface, transform_func=None):
-        """绘制道路标线
+        """
+        绘制道路标线(车道线、分隔线等)
         
         Args:
-            surface: 要绘制的表面
-            transform_func: 坐标转换函数，接收 (x, y) 返回转换后的 (x, y)
+            surface (pygame.Surface): 要绘制的pygame表面
+            transform_func (callable, optional): 坐标转换函数
+            
+        Notes:
+            绘制双向分隔线(中央白实线)和车道边界线
         """
         # 如果未提供转换函数，则使用恒等映射
         if transform_func is None:
@@ -287,12 +326,16 @@ class Road:
         self.draw_corner_arcs(surface, corner_radius, transform_func)
     
     def draw_corner_arcs(self, surface, radius, transform_func=None):
-        """绘制道路边界的圆弧缓冲
+        """
+        绘制道路边界的四个圆弧缓冲(路口转角)
         
         Args:
-            surface: 要绘制的表面
-            radius: 圆弧半径
-            transform_func: 坐标转换函数
+            surface (pygame.Surface): 要绘制的pygame表面
+            radius (float): 圆弧半径
+            transform_func (callable, optional): 坐标转换函数
+            
+        Notes:
+            在四个转角处绘制圆弧，使道路转角更自然
         """
         if transform_func is None:
             transform_func = lambda x, y: (x, y)
@@ -326,15 +369,19 @@ class Road:
         self.draw_arc(surface, center_x, center_y, radius, start_angle, end_angle, transform_func=transform_func)
     
     def draw_arc(self, surface, center_x, center_y, radius, start_angle, end_angle, color=(255, 255, 255), transform_func=None):
-        """绘制边界圆弧
+        """
+        绘制边界圆弧
         
         Args:
-            surface: 要绘制的表面
-            center_x, center_y: 圆心坐标
-            radius: 半径
-            start_angle, end_angle: 起始和结束角度
-            color: 颜色
-            transform_func: 坐标转换函数
+            surface (pygame.Surface): 要绘制的pygame表面
+            center_x, center_y (float): 圆心坐标
+            radius (float): 圆弧半径
+            start_angle, end_angle (float): 起始和结束角度(弧度)
+            color (tuple): RGB或RGBA颜色元组
+            transform_func (callable, optional): 坐标转换函数
+            
+        Notes:
+            通过生成多个线段点来近似圆弧，支持透明度
         """
         if transform_func is None:
             transform_func = lambda x, y: (x, y)
@@ -378,13 +425,17 @@ class Road:
         if temp_surface:
             surface.blit(temp_surface, (0, 0))
     
-    def draw_center_lines(self, surface, alpha=128, transform_func=None):  # 添加transform_func参数
-        """绘制车道中线（包含转弯圆弧）
+    def draw_center_lines(self, surface, alpha=128, transform_func=None):
+        """
+        绘制车道中线(包含直行段和转弯段)
         
         Args:
-            surface: 要绘制的表面
-            alpha: 透明度
-            transform_func: 坐标转换函数
+            surface (pygame.Surface): 要绘制的pygame表面
+            alpha (int): 透明度值(0-255)
+            transform_func (callable, optional): 坐标转换函数
+            
+        Notes:
+            使用黄色半透明线条表示车道中线，分别绘制直行段和转弯段
         """
         if transform_func is None:
             transform_func = lambda x, y: (x, y)
@@ -468,12 +519,16 @@ class Road:
         self.draw_turn_arcs(surface, alpha, transform_func)
 
     def draw_turn_arcs(self, surface, alpha=128, transform_func=None):
-        """绘制转弯圆弧连接线（使用圆心和角度定义方式）
+        """
+        绘制转弯圆弧连接线(左转和右转的路径)
         
         Args:
-            surface: 要绘制的表面
-            alpha: 透明度
-            transform_func: 坐标转换函数
+            surface (pygame.Surface): 要绘制的pygame表面
+            alpha (int): 透明度值(0-255)
+            transform_func (callable, optional): 坐标转换函数
+            
+        Notes:
+            使用不同半径的圆弧分别表示左转(大半径)和右转(小半径)的路径
         """
         if transform_func is None:
             transform_func = lambda x, y: (x, y)
@@ -530,13 +585,19 @@ class Road:
                       0, math.pi * 0.5, yellow, transform_func)
 
     def generate_centerline_points(self, segment_length=5, straight_segment_length=None):
-        """生成中心线的点序列，用于车辆追踪
+        """
+        生成所有可能行驶路线的原始中心线点序列
         
         Args:
-            segment_length: 每段的长度（像素）
+            segment_length (int): 转弯段每段的采样长度(像素)
+            straight_segment_length (int, optional): 直线段的采样长度，默认为转弯段的15倍
             
         Returns:
-            dict: 包含各个方向和转弯的点序列
+            dict: 包含各个方向和转弯路线的原始点序列
+            
+        Notes:
+            生成12种可能路线的原始点，包括四个直行和八个转弯路线
+            这些点将进一步被平滑和重采样处理
         """
 
         # 直线路段使用更大的间距
@@ -793,16 +854,23 @@ class Road:
         return points
 
     def get_route_points(self, start_direction, end_direction, segment_length=3, straight_segment_length=None):
-        """获取从起始方向到结束方向的完整路径点序列
+        """
+        获取从起始方向到结束方向的完整路径点序列
         
         Args:
-            start_direction: 起始方向 ('north', 'south', 'east', 'west')
-            end_direction: 结束方向 ('north', 'south', 'east', 'west')
-            segment_length: 转弯时每段的长度（像素）
-            straight_segment_length: 直线时每段的长度（像素），如果为None则使用segment_length的4倍
+            start_direction (str): 起始方向 ('north', 'south', 'east', 'west')
+            end_direction (str): 结束方向 ('north', 'south', 'east', 'west')
+            segment_length (int): 转弯时每段的长度(像素)
+            straight_segment_length (int, optional): 直线时每段的长度
             
         Returns:
-            list: 完整路径的点序列，每个元素为 (x, y, angle) 元组，angle为弧度制朝向角度
+            dict: 包含路径数据的字典，包括原始点、平滑点和边界数据
+            
+        Notes:
+            1. 首先检查缓存是否存在该路径
+            2. 如不存在，从原始点开始生成、平滑、重采样
+            3. 计算路径的朝向角度和左右边界
+            4. 将结果缓存以提高性能
         """
         move_str = f"{start_direction[0].upper()}_{end_direction[0].upper()}"
         
@@ -854,8 +922,11 @@ class Road:
 
     def _pre_generate_all_routes(self):
         """
-        在仿真开始前，预先生成并缓存所有可能的路径及其边界。
-        这是确保 self.routes 不为空的关键。
+        在仿真开始前，预先生成并缓存所有可能的路径及其边界
+        
+        Notes:
+            生成所有12种可能的行驶路线(四个方向的两两组合，去除相同起终点)
+            预计算可以提高仿真性能，避免运行时的路径计算延迟
         """
         print("Pre-generating all 12 routes and their boundaries...")
         directions = ['north', 'south', 'east', 'west']
@@ -867,14 +938,18 @@ class Road:
         print("All routes pre-generated and cached.")
 
     def _remove_duplicate_points(self, points, tolerance=1):
-        """Remove consecutive duplicate points from a list of points
+        """
+        删除点列表中连续的重复点
         
         Args:
-            points: List of (x, y) tuples
-            tolerance: Minimum distance between points to be considered different
+            points (list): (x, y)坐标点列表
+            tolerance (float): 最小距离阈值，低于此值的点被视为重复点
             
         Returns:
-            list: Points with consecutive duplicates removed
+            list: 删除重复点后的点列表
+            
+        Notes:
+            用于优化路径点，减少不必要的计算和渲染
         """
         if not points:
             return points
@@ -894,20 +969,33 @@ class Road:
 
     def do_paths_conflict(self, move_str1, move_str2):
         """
-        通过查询预计算的冲突矩阵，高效地判断两条路径是否冲突。
+        判断两条路径是否存在潜在冲突
+        
+        Args:
+            move_str1 (str): 第一条路径标识符(如'N_S'表示从北到南)
+            move_str2 (str): 第二条路径标识符
+            
+        Returns:
+            bool: 如果两条路径存在潜在冲突返回True，否则返回False
+            
+        Notes:
+            使用预计算的冲突矩阵进行O(1)复杂度的快速查询
         """
         # 使用.get()方法来安全地查询，如果键不存在则返回False
         return self.conflict_matrix.get(move_str1, {}).get(move_str2, False)
 
     def get_conflict_entry_index(self, move_str):
         """
-        获取指定路径进入扩展冲突区域的第一个点的索引。
+        获取指定路径进入冲突区域的第一个点的索引
         
         Args:
-            move_str: 路径标识符
+            move_str (str): 路径标识符(如'N_S')
             
         Returns:
-            int: 第一个进入扩展冲突区域的点的索引，如果路径不存在或不经过冲突区，返回-1
+            int: 第一个进入冲突区域的点的索引，如果路径不存在或不经过冲突区，返回-1
+            
+        Notes:
+            对于交通控制决策非常重要，可确定车辆何时需要决策避让
         """
         # 确保路径存在
         if not hasattr(self, 'routes') or move_str not in self.routes:
@@ -923,15 +1011,18 @@ class Road:
     
     def visualize_conflict_entry_point(self, surface, start_direction, end_direction, color=(255, 0, 0), point_radius=5, transform_func=None):
         """
-        可视化指定路径进入扩展冲突区域的第一个点。
+        可视化指定路径进入扩展冲突区域的第一个点
         
         Args:
-            surface: pygame surface对象
-            start_direction: 起始方向 ('north', 'south', 'east', 'west')
-            end_direction: 结束方向 ('north', 'south', 'east', 'west') 
-            color: 点的颜色
-            point_radius: 点的半径
-            transform_func: 坐标转换函数
+            surface (pygame.Surface): pygame表面对象
+            start_direction (str): 起始方向 ('north', 'south', 'east', 'west')
+            end_direction (str): 结束方向
+            color (tuple): 点的RGB颜色
+            point_radius (int): 点的半径(像素)
+            transform_func (callable, optional): 坐标转换函数
+            
+        Notes:
+            用于调试和可视化，以红色圆点标记路径进入冲突区的位置
         """
         if transform_func is None:
             transform_func = lambda x, y: (x, y)
@@ -969,7 +1060,19 @@ class Road:
 
 
     def _potential_func(self, u):
-        """利用查表插值 + 线性外推计算势能；保持偶函数性质。"""
+        """
+        利用查表插值+线性外推计算势能值
+        
+        Args:
+            u (float): 归一化的横向距离
+            
+        Returns:
+            float: 计算得到的势能值
+            
+        Notes:
+            使用预计算的积分值进行高效插值，并保持偶函数性质
+            在查表范围外使用线性外推
+        """
         u = abs(float(u))
         if u <= self.u_max:
             # 在非均匀网格上插值 I(u)
@@ -981,7 +1084,19 @@ class Road:
 
     def get_potential_at_point(self, x, y, target_route_str=None):
         """
-        【最终版】计算世界坐标系中任意一点(x, y)的势能值。
+        计算世界坐标系中任意一点(x, y)的势能值
+        
+        Args:
+            x, y (float): 要计算势能的点坐标
+            target_route_str (str, optional): 目标路径标识符，如果指定则只考虑该路径
+            
+        Returns:
+            float: 该点的势能值，值越小表示该点越适合车辆行驶
+            
+        Notes:
+            1. 如指定路径，计算点到该路径中心线的最小距离
+            2. 如未指定，找到距离点最近的路径
+            3. 根据归一化的横向距离计算势能值
         """
         min_dist_to_centerline = float('inf')
         is_inside = False

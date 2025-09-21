@@ -1,3 +1,12 @@
+"""
+@file: analysis.py
+@description: 
+本文件用于分析和可视化车辆在不同速度和加速度工况下的功率消耗特性。
+主要包含以下功能：
+1. analyze_power_map(): 生成车辆速度-加速度-功率消耗热力图，用于直观展示车辆在
+   不同工况下的能量需求特性，包括驱动模式和再生制动模式下的电功率计算。
+"""
+
 import numpy as np
 import matplotlib.pyplot as plt
 from config import *
@@ -5,7 +14,18 @@ from vehicle import calculate_spm_loss_kw
 
 def analyze_power_map():
     """
-    综合分析不同速度和加速度下的瞬时功率消耗，并生成热力图。
+    分析车辆在不同速度和加速度组合下的瞬时功率消耗并生成热力图。
+    
+    功能说明:
+    1. 创建速度(0-35m/s)和加速度(-MAX_ACCELERATION到MAX_ACCELERATION)的二维网格
+    2. 计算每个网格点的功率消耗:
+       - 计算合成牵引力(惯性力+风阻+滚阻)
+       - 转换为电机扭矩和转速
+       - 根据驱动/制动模式计算电功率
+    3. 绘制功率热力图，包括等高线和相关标注
+    
+    返回:
+    无 - 直接显示生成的热力图
     """
     # --- 1. 定义分析范围 ---
     # 速度范围: 0 到 35 m/s (约 126 km/h), 分成 100 个点
@@ -94,6 +114,9 @@ def analyze_power_map():
 
 
 if __name__ == '__main__':
+    """
+    主程序入口：配置matplotlib支持中文显示并执行功率地图分析
+    """
     # 确保你的环境中安装了 matplotlib: pip install matplotlib
     # 设置matplotlib支持中文显示
     plt.rcParams['font.sans-serif'] = ['SimHei']

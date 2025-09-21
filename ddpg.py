@@ -1,41 +1,34 @@
 """
 @file: ddpg.py
 @description:
-该文件提供了深度确定性策略梯度 (DDPG) 算法的完整 PyTorch 实现。
-DDPG 是一种适用于连续动作空间的、无模型 (model-free)、离策略 (off-policy) 的强化学习算法，
-它结合了深度 Q 网络 (DQN) 和 Actor-Critic 方法的思想。
+本文件提供了深度确定性策略梯度(DDPG)算法的完整PyTorch实现。
+DDPG是一种用于连续动作空间的强化学习算法，结合了DQN和Actor-Critic的优点。
 
-该实现包含以下核心组件:
+主要组件:
 
-1.  **超参数 (Hyperparameters):**
-    文件顶部集中定义了所有可调参数，如经验池大小、学习率、折扣因子、软更新系数等，
-    方便统一管理和调优。
+1. ReplayBuffer类:
+   - 实现经验回放池，存储和采样(s,a,r,s',done)元组
+   - 函数: add(), sample(), __len__()
 
-2.  **ReplayBuffer (经验回放池):**
-    一个标准的经验回放池类。它用于存储智能体与环境交互的经验元组 (state, action, reward, next_state, done)，
-    并通过随机采样小批量数据来打破经验之间的相关性，从而稳定训练过程。
+2. Actor类:
+   - 实现策略网络，将状态映射到确定性动作
+   - 函数: __init__(), forward()
 
-3.  **Actor (策略网络):**
-    一个神经网络，将状态 (state) 映射到一个确定的动作 (action)。它学习能够最大化预期回报的最优策略。
-    网络输出层使用 `tanh` 激活函数将动作缩放到 [-1, 1] 范围，再根据环境的实际动作范围进行调整。
+3. Critic类:
+   - 实现价值网络，评估状态-动作对的Q值
+   - 函数: __init__(), forward()
 
-4.  **Critic (价值网络):**
-    一个神经网络，输入状态 (state) 和动作 (action)，输出对应的 Q 值 (预期的累积回报)。
-    它学习评估 Actor 网络所选择动作的优劣。
+4. DDPGAgent类:
+   - 实现DDPG算法的核心逻辑
+   - 函数: __init__(), hard_update(), select_action(), step(), learn(),
+     soft_update(), save_model(), load_model()
 
-5.  **DDPGAgent (DDPG 智能体):**
-    封装了 DDPG 算法核心逻辑的主类。它管理：
-    - 四个神经网络：一个 Actor 网络、一个 Critic 网络，以及它们各自对应的 Target 网络。
-      Target 网络是主网络的延迟更新副本，用于计算 TD-Target，极大地提高了学习的稳定性。
-    - 经验回放池 `ReplayBuffer` 的实例。
-    - 学习过程 (`learn` 方法)：根据从回放池中采样的经验来更新 Actor 和 Critic 网络。
-    - 与环境的交互 (`select_action`, `step` 方法)：负责选择动作并处理每一步的经验。
-    - 模型的保存与加载功能。
-
-算法训练流程:
-- Critic 网络通过最小化 TD 误差 (Mean Squared Error) 来更新，其 TD Target 是利用 Target 网络计算得出的。
-- Actor 网络通过策略梯度来更新，目标是使其输出的动作能获得 Critic 网络给出的更高 Q 值。
-- 两个 Target 网络通过“软更新” (Polyak Averaging) 方式缓慢地追踪主网络的参数。
+工作流程:
+- 智能体通过Actor网络选择动作，并添加噪声以促进探索
+- 经验存储在回放池中，定期从中采样批次数据进行学习
+- Critic网络通过TD学习更新Q值估计
+- Actor网络通过策略梯度更新，以最大化预期回报
+- 目标网络通过软更新跟踪主网络，提高训练稳定性
 """
 import torch
 import torch.nn as nn
@@ -67,19 +60,36 @@ class ReplayBuffer:
     def __init__(self, buffer_size, batch_size):
         """
         初始化经验回放池
-        :param buffer_size: int, 经验池最大容量
-        :param batch_size: int, 采样批次大小
+        
+        参数:
+            buffer_size: int, 经验池最大容量，当超过此容量时会移除最旧的经验
+            batch_size: int, 每次学习采样的批次大小
         """
         self.memory = deque(maxlen=buffer_size)
         self.batch_size = batch_size
 
     def add(self, state, action, reward, next_state, done):
-        """向经验池中添加一条经验"""
+        """
+        向经验池中添加一条经验
+        
+        参数:
+            state: 当前状态
+            action: 执行的动作
+            reward: 获得的奖励
+            next_state: 下一个状态
+            done: 是否为终止状态的标志
+        """
         e = (state, action, reward, next_state, done)
         self.memory.append(e)
 
     def sample(self):
-        """从经验池中随机采样一个批次的经验"""
+        """
+        从经验池中随机采样一个批次的经验
+        
+        返回:
+            包含(states, actions, rewards, next_states, dones)的元组，
+            每个元素都是批次大小的张量，已转移到指定设备
+        """
         experiences = random.sample(self.memory, k=self.batch_size)
         
         # 将经验元组转换为批次张量
@@ -92,12 +102,25 @@ class ReplayBuffer:
         return (states, actions, rewards, next_states, dones)
 
     def __len__(self):
-        """返回当前经验池中的经验数量"""
+        """
+        返回当前经验池中的经验数量，用于检查是否有足够的样本开始学习
+        
+        返回:
+            int: 当前经验池大小
+        """
         return len(self.memory)
 
 # --- Actor 网络 ---
 class Actor(nn.Module):
     def __init__(self, state_dim, action_dim, action_high):
+        """
+        初始化Actor网络
+        
+        参数:
+            state_dim: int, 状态空间维度
+            action_dim: int, 动作空间维度
+            action_high: ndarray, 动作空间上限值，用于缩放tanh输出
+        """
         super(Actor, self).__init__()
         self.action_high = torch.tensor(action_high, dtype=torch.float32).to(DEVICE)
         
@@ -106,6 +129,15 @@ class Actor(nn.Module):
         self.fc3 = nn.Linear(128, action_dim)
 
     def forward(self, state):
+        """
+        前向传播函数，将状态映射为确定性动作
+        
+        参数:
+            state: 输入状态张量
+            
+        返回:
+            action: 缩放到实际动作范围的动作张量
+        """
         x = F.relu(self.fc1(state))
         x = F.relu(self.fc2(x))
         # 使用 tanh 将输出缩放到 [-1, 1]，然后乘以动作范围
@@ -115,6 +147,13 @@ class Actor(nn.Module):
 # --- Critic 网络 ---
 class Critic(nn.Module):
     def __init__(self, state_dim, action_dim):
+        """
+        初始化Critic网络
+        
+        参数:
+            state_dim: int, 状态空间维度
+            action_dim: int, 动作空间维度
+        """
         super(Critic, self).__init__()
         
         # Q1 网络
@@ -123,6 +162,16 @@ class Critic(nn.Module):
         self.fc3 = nn.Linear(128, 1)
 
     def forward(self, state, action):
+        """
+        前向传播函数，计算给定状态-动作对的Q值
+        
+        参数:
+            state: 状态张量
+            action: 动作张量
+            
+        返回:
+            q_value: 对应状态-动作对的Q值
+        """
         # 将状态和动作在维度 1 上拼接
         x = torch.cat([state, action], dim=1)
         
@@ -134,6 +183,15 @@ class Critic(nn.Module):
 # --- DDPG Agent ---
 class DDPGAgent():
     def __init__(self, state_dim, action_dim, action_high, writer=None):
+        """
+        初始化DDPG智能体
+        
+        参数:
+            state_dim: int, 状态空间维度
+            action_dim: int, 动作空间维度
+            action_high: ndarray, 动作空间上限
+            writer: SummaryWriter对象，用于TensorBoard可视化(可选)
+        """
         self.replay_buffer = ReplayBuffer(BUFFER_SIZE, BATCH_SIZE)
 
         self.writer = writer
@@ -154,11 +212,27 @@ class DDPGAgent():
         self.hard_update(self.critic_target, self.critic_local)
         
     def hard_update(self, target, source):
+        """
+        硬更新目标网络参数，直接复制源网络参数
+        
+        参数:
+            target: 目标网络
+            source: 源网络
+        """
         for target_param, param in zip(target.parameters(), source.parameters()):
             target_param.data.copy_(param.data)
 
     def select_action(self, state, add_noise=True):
-        """根据当前状态选择动作"""
+        """
+        根据当前状态选择动作
+        
+        参数:
+            state: ndarray, 当前环境状态
+            add_noise: bool, 是否添加噪声进行探索
+            
+        返回:
+            ndarray: 裁剪到合法范围的动作值
+        """
         state = torch.from_numpy(state).float().unsqueeze(0).to(DEVICE) # 添加unsqueeze(0)以创建批次维度
         self.actor_local.eval() # 切换到评估模式
         with torch.no_grad():
@@ -177,7 +251,16 @@ class DDPGAgent():
         return np.clip(action, action_low, action_high)
 
     def step(self, state, action, reward, next_state, done):
-        """将经验存入回放池，并检查是否可以开始学习"""
+        """
+        处理一步交互的经验，存入经验池并可能触发学习过程
+        
+        参数:
+            state: 当前状态
+            action: 执行的动作
+            reward: 获得的奖励
+            next_state: 下一个状态
+            done: 是否为终止状态
+        """
         self.replay_buffer.add(state, action, reward, next_state, done)
 
         # 如果回放池中有足够的数据，则进行一次学习
@@ -187,7 +270,16 @@ class DDPGAgent():
 
     def learn(self, experiences):
         """
-        使用一个批次的经验数据来更新 Actor 和 Critic 网络
+        使用一个批次的经验数据来更新Actor和Critic网络
+        
+        参数:
+            experiences: 包含(states, actions, rewards, next_states, dones)的元组
+            
+        流程:
+            1. 更新Critic网络：最小化TD误差
+            2. 更新Actor网络：最大化Q值期望
+            3. 软更新两个目标网络
+            4. 记录训练指标(如果有writer)
         """
         states, actions, rewards, next_states, dones = experiences
 
@@ -237,13 +329,23 @@ class DDPGAgent():
 
     def soft_update(self, local_model, target_model, tau):
         """
-        软更新模型参数: θ_target = τ*θ_local + (1 - τ)*θ_target
+        软更新模型参数: θ_target = τ*θ_local + (1-τ)*θ_target
+        
+        参数:
+            local_model: 本地网络(源)
+            target_model: 目标网络
+            tau: float, 软更新系数，控制更新速度
         """
         for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
             target_param.data.copy_(tau*local_param.data + (1.0-tau)*target_param.data)
 
     def save_model(self, filename):
-        """保存模型参数到文件"""
+        """
+        保存模型参数到文件
+        
+        参数:
+            filename: str, 保存文件的路径
+        """
         torch.save({
             'actor_state_dict': self.actor_local.state_dict(),
             'critic_state_dict': self.critic_local.state_dict(),
@@ -253,7 +355,15 @@ class DDPGAgent():
         print(f"模型已保存到 {filename}")
 
     def load_model(self, filename):
-        """从文件加载模型参数"""
+        """
+        从文件加载模型参数
+        
+        参数:
+            filename: str, 模型文件的路径
+            
+        异常处理:
+            处理文件不存在和其他加载错误
+        """
         try:
             checkpoint = torch.load(filename, map_location=DEVICE)
             self.actor_local.load_state_dict(checkpoint['actor_state_dict'])

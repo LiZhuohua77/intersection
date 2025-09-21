@@ -49,12 +49,34 @@ from torch.distributions import Normal
 import numpy as np
 
 def init_weights(m):
+    """
+    初始化神经网络层的权重
+    
+    Args:
+        m (nn.Module): 需要初始化的神经网络层
+        
+    Notes:
+        使用正交初始化方法初始化线性层权重，并将偏置项初始化为0
+        正交初始化有助于稳定深度网络的训练过程
+    """
     if isinstance(m, nn.Linear):
         nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
         nn.init.constant_(m.bias, 0.0)
 
 class Actor(nn.Module):
     def __init__(self, state_dim, action_dim, hidden_dim=256):
+        """
+        初始化Actor网络
+        
+        Args:
+            state_dim (int): 状态空间的维度
+            action_dim (int): 动作空间的维度
+            hidden_dim (int): 隐藏层的神经元数量
+            
+        Notes:
+            Actor网络使用两层隐藏层的全连接网络，输出层使用tanh激活函数
+            网络同时学习动作的均值和标准差对数，用于构建高斯策略分布
+        """
         super(Actor, self).__init__()
         self.net = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),
@@ -68,6 +90,19 @@ class Actor(nn.Module):
         self.apply(init_weights)
 
     def forward(self, state):
+        """
+        前向传播计算策略分布
+        
+        Args:
+            state (torch.Tensor): 输入状态张量
+            
+        Returns:
+            torch.distributions.Normal: 表示动作的高斯分布，包含均值和标准差
+            
+        Notes:
+            输出是一个多变量高斯分布，mean是tanh输出的动作均值，
+            std是log_std的指数，确保标准差为正值
+        """
         mean = self.net(state)
         std = self.log_std.exp().expand_as(mean)
         dist = Normal(mean, std)
@@ -75,6 +110,17 @@ class Actor(nn.Module):
 
 class Critic(nn.Module):
     def __init__(self, state_dim, hidden_dim=256):
+        """
+        初始化Critic网络
+        
+        Args:
+            state_dim (int): 状态空间的维度
+            hidden_dim (int): 隐藏层的神经元数量
+            
+        Notes:
+            Critic网络使用两层隐藏层的全连接网络，输出一个标量值
+            用于估计状态价值函数（奖励价值或成本价值）
+        """
         super(Critic, self).__init__()
         self.net = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),
@@ -86,10 +132,33 @@ class Critic(nn.Module):
         self.apply(init_weights)
 
     def forward(self, state):
+        """
+        前向传播计算状态价值
+        
+        Args:
+            state (torch.Tensor): 输入状态张量
+            
+        Returns:
+            torch.Tensor: 状态价值估计
+        """
         return self.net(state)
 
 class RolloutBuffer:
     def __init__(self, buffer_size, state_dim, action_dim, gamma, gae_lambda):
+        """
+        初始化经验回放缓冲区
+        
+        Args:
+            buffer_size (int): 缓冲区大小，即存储的最大时间步数
+            state_dim (int): 状态空间的维度
+            action_dim (int): 动作空间的维度
+            gamma (float): 折扣因子，用于计算折扣回报
+            gae_lambda (float): GAE lambda参数，用于平衡偏差和方差
+            
+        Notes:
+            为SAGI-PPO设计的特殊缓冲区，同时存储奖励和成本相关数据
+            支持广义优势估计(GAE)计算
+        """
         self.buffer_size = buffer_size
         self.gamma = gamma
         self.gae_lambda = gae_lambda
@@ -106,6 +175,19 @@ class RolloutBuffer:
         self.next_value_c = 0        
     
     def store(self, state, action, reward, cost, done, value_r, value_c, log_prob):
+        """
+        存储单个交互步骤的数据
+        
+        Args:
+            state (np.ndarray): 环境状态
+            action (np.ndarray): 执行的动作
+            reward (float): 获得的奖励
+            cost (float): 产生的成本/安全违反值
+            done (bool): 回合是否结束
+            value_r (float): 奖励Critic估计的状态价值
+            value_c (float): 成本Critic估计的状态价值
+            log_prob (float): 动作的对数概率
+        """
         self.states[self.ptr] = state
         self.actions[self.ptr] = action
         self.rewards[self.ptr] = reward
@@ -117,7 +199,16 @@ class RolloutBuffer:
         self.ptr += 1
 
     def finish_path(self, last_value_r, last_value_c):
-        """正确处理轨迹结束时的价值估计"""
+        """
+        结束当前轨迹，记录最终状态的价值估计
+        
+        Args:
+            last_value_r (float): 最终状态的奖励价值估计
+            last_value_c (float): 最终状态的成本价值估计
+            
+        Notes:
+            用于正确处理回合结束时的价值估计，这对GAE计算很重要
+        """
         if self.ptr > 0:  # 确保buffer不为空
             self.next_value_r = last_value_r
             self.next_value_c = last_value_c
@@ -125,6 +216,21 @@ class RolloutBuffer:
         self.path_start_idx = self.ptr
 
     def _calculate_advantages(self, values, rewards_or_costs, dones):
+        """
+        计算广义优势估计(GAE)
+        
+        Args:
+            values (np.ndarray): 状态价值估计数组
+            rewards_or_costs (np.ndarray): 奖励或成本数组
+            dones (np.ndarray): 终止标志数组
+            
+        Returns:
+            np.ndarray: 计算得到的优势函数数组
+            
+        Notes:
+            内部方法，分别用于计算奖励优势和成本优势
+            使用GAE算法，结合TD误差和折扣因子
+        """
         advantages = np.zeros_like(rewards_or_costs)
         last_gae_lam = 0
         for t in reversed(range(self.buffer_size)):
@@ -139,6 +245,23 @@ class RolloutBuffer:
         return advantages
 
     def get(self):
+        """
+        获取处理后的训练数据批次
+        
+        Returns:
+            dict: 包含处理后训练数据的字典，键包括:
+                - states: 状态张量
+                - actions: 动作张量
+                - log_probs: 动作对数概率
+                - advantages_r: 归一化的奖励优势函数
+                - advantages_c: 归一化的成本优势函数
+                - returns_r: 归一化的奖励回报
+                - returns_c: 归一化的成本回报
+                
+        Notes:
+            此方法在缓冲区满时调用，计算优势函数和回报
+            对优势函数和回报进行归一化以提高训练稳定性
+        """
         assert self.ptr == self.buffer_size # Buffer must be full
         self.ptr = 0
         
@@ -173,6 +296,24 @@ class RolloutBuffer:
 class SAGIPPOAgent:
     def __init__(self, state_dim, action_dim, lr=3e-4, hidden_dim=256, gamma=0.99, gae_lambda=0.95,
                  clip_epsilon=0.2, update_epochs=10, cost_limit=5.0):
+        """
+        初始化SAGI-PPO代理
+        
+        Args:
+            state_dim (int): 状态空间的维度
+            action_dim (int): 动作空间的维度
+            lr (float): 学习率
+            hidden_dim (int): 隐藏层的神经元数量
+            gamma (float): 折扣因子
+            gae_lambda (float): GAE lambda参数
+            clip_epsilon (float): PPO裁剪参数
+            update_epochs (int): 每批数据的更新轮数
+            cost_limit (float): 成本预算上限d
+            
+        Notes:
+            SAGI-PPO代理包含一个Actor网络和两个Critic网络(奖励和成本)
+            使用拉格朗日乘子方法处理约束，但根据场景动态调整更新策略
+        """
         # --- 网络定义 ---
         self.actor = Actor(state_dim, action_dim, hidden_dim)
         self.critic_r = Critic(state_dim, hidden_dim) # 奖励Critic
@@ -193,6 +334,19 @@ class SAGIPPOAgent:
         self.lambda_val = 1.0         # 拉格朗日乘子 lambda (初始值)
 
     def select_action(self, state):
+        """
+        根据当前状态和策略选择动作
+        
+        Args:
+            state (np.ndarray): 环境状态
+            
+        Returns:
+            tuple: (动作数组, 奖励价值估计, 成本价值估计, 动作对数概率)
+            
+        Notes:
+            用于训练过程中的探索，从策略分布中采样动作
+            同时返回奖励和成本价值估计，用于后续的优势计算
+        """
         state = torch.as_tensor(state, dtype=torch.float32).unsqueeze(0)
         with torch.no_grad():
             dist = self.actor(state)
@@ -203,7 +357,19 @@ class SAGIPPOAgent:
         return action.numpy().flatten(), value_r.item(), value_c.item(), log_prob.item()
 
     def get_deterministic_action(self, state):
-        """获取确定性动作（策略分布的均值），用于评估。"""
+        """
+        获取确定性动作(策略分布的均值)
+        
+        Args:
+            state (np.ndarray): 环境状态
+            
+        Returns:
+            np.ndarray: 确定性动作数组
+            
+        Notes:
+            用于评估和部署阶段，直接使用策略分布的均值作为动作
+            无需探索，因此不进行随机采样
+        """
         state = torch.as_tensor(state, dtype=torch.float32).unsqueeze(0)
         with torch.no_grad():
             dist = self.actor(state)
@@ -211,6 +377,27 @@ class SAGIPPOAgent:
         return action.numpy().flatten()
 
     def update(self, buffer: RolloutBuffer, writer, global_step):
+        """
+        使用收集的轨迹数据更新网络参数
+        
+        Args:
+            buffer (RolloutBuffer): 包含训练数据的缓冲区
+            writer: TensorBoard日志记录器，用于记录训练指标
+            global_step (int): 全局训练步数
+            
+        Notes:
+            SAGI-PPO的核心更新逻辑，包括:
+            1. 计算成本盈余c和梯度方向点积p
+            2. 根据c和p的值确定更新模式(A/B/C三种情况)
+            3. 根据不同模式使用不同的目标优势函数更新Actor
+            4. 分别更新奖励Critic和成本Critic
+            5. 更新拉格朗日乘子lambda
+            
+            三种更新模式:
+            - A模式(自由探索): 当前安全且无冲突，使用奖励优势
+            - C模式(紧急恢复): 当前危险且有冲突，使用负成本优势
+            - B模式(约束权衡): 其他情况，使用加权组合优势
+        """
         batch = buffer.get()
         
         # --- 核心要素计算 ---

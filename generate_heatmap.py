@@ -1,3 +1,24 @@
+"""
+@file: generate_heatmap.py
+@description:
+该文件用于生成高精度的交通路径势场热力图，并将其导出为PNG图像文件。
+势场热力图可视化了不同路线的潜在场分布，用于分析车辆导航和路径规划策略。
+
+主要功能:
+1. 为指定的车辆路线生成高分辨率势场热力图
+2. 将复杂的势场数据通过颜色映射直观呈现
+3. 支持添加道路标线和路径轮廓作为参考
+4. 导出为高质量PNG图像，用于后续分析和报告
+
+主要函数:
+- generate_heatmap_for_route(route_str): 为指定路径生成并导出热力图
+- world_to_pixel_scaler(): 坐标转换辅助函数(在generate_heatmap_for_route内部定义)
+
+使用方法:
+通过修改TARGET_ROUTE_FOR_HEATMAP参数(如'N_S'、'E_W'等)来生成不同路径的热力图。
+执行脚本后，会在当前目录生成对应的PNG图像文件。
+"""
+
 import pygame
 import numpy as np
 import matplotlib.pyplot as plt
@@ -24,6 +45,19 @@ IMAGE_HEIGHT_PX = 800
 def generate_heatmap_for_route(route_str: str):
     """
     为单条指定路径，生成并导出一张静态的、高精度的势函数热力图PNG图片。
+    
+    该函数执行以下步骤:
+    1. 初始化Road对象并预生成所有路径
+    2. 逐像素计算势场值并填充网格
+    3. 使用matplotlib的colormap将势场值映射为颜色
+    4. 绘制热力图并添加道路轮廓作为参考
+    5. 将最终图像保存为PNG文件
+    
+    参数:
+        route_str: 路径标识符，格式为"起点_终点"，例如"N_S"表示从北向南
+    
+    返回:
+        无，但会在当前目录生成一个PNG图像文件
     """
     print("Initializing Road object and pre-generating all paths...")
     road = Road(width=SCREEN_WIDTH, height=SCREEN_HEIGHT, lane_width=4)
@@ -55,8 +89,18 @@ def generate_heatmap_for_route(route_str: str):
 
     # --- ▼▼▼ 核心修正部分 ▼▼▼ ---
 
-    # 1. 创建一个从“世界坐标”到“图像像素坐标”的缩放函数
+    # 1. 创建一个从"世界坐标"到"图像像素坐标"的缩放函数
     def world_to_pixel_scaler(world_x, world_y):
+        """
+        将世界坐标转换为热力图图像上的像素坐标
+        
+        参数:
+            world_x: 世界坐标系中的X坐标
+            world_y: 世界坐标系中的Y坐标
+            
+        返回:
+            tuple: 对应的像素坐标(px_x, px_y)
+        """
         px_x = (world_x / road.width) * IMAGE_WIDTH_PX
         px_y = (world_y / road.height) * IMAGE_HEIGHT_PX
         return (int(px_x), int(px_y))

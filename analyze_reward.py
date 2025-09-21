@@ -1,16 +1,41 @@
+"""
+@file: analyze_reward.py
+@description: 
+本文件用于分析和可视化强化学习训练过程中的奖励、动作和状态数据。
+主要功能包括：
+1. 解析训练日志中的数据
+2. 可视化奖励构成及其组件贡献
+3. 可视化智能体动作、车辆状态和误差指标
+此工具可帮助研究人员理解和调试强化学习智能体在交通场景中的行为表现。
+"""
+
 import pandas as pd
 import matplotlib.pyplot as plt
 
 plt.rcParams['font.sans-serif'] = ['SimHei']   # Windows: 黑体
-# plt.rcParams['font.sans-serif'] = ['Microsoft YaHei']  # Windows: 微软雅黑
-# plt.rcParams['font.sans-serif'] = ['PingFang SC']  # macOS
-# plt.rcParams['font.sans-serif'] = ['Arial Unicode MS']  # macOS
-# plt.rcParams['font.sans-serif'] = ['WenQuanYi Zen Hei']  # Linux
 plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示为方块的问题
-# --- 把上面的绘图函数 plot_reward_composition 和 plot_actions_and_states 复制到这里 ---
 
 def plot_reward_composition(df):
-    """绘制奖励构成堆叠面积图和总奖励曲线"""
+    """
+    绘制奖励构成堆叠面积图和总奖励曲线。
+    
+    参数:
+        df (DataFrame): 包含奖励组件数据的数据帧，必须包含以下列:
+            - step: 训练步数
+            - reward_velocity_tracking: 速度跟踪奖励
+            - reward_time_penalty: 时间惩罚
+            - reward_action_smoothness: 动作平滑度惩罚
+            - reward_cost_penalty: 成本惩罚
+            - total_reward: 总奖励值
+    
+    功能:
+        1. 创建堆叠面积图显示各奖励组件的贡献
+        2. 叠加总奖励曲线以便对比
+        3. 添加图例和坐标轴标签
+    
+    返回:
+        无，直接显示图表
+    """
     if df.empty:
         print("数据为空，无法绘图。")
         return
@@ -45,7 +70,27 @@ def plot_reward_composition(df):
 
     
 def plot_actions_and_states(df):
-    """绘制三合一图表：动作、运动状态、误差与成本"""
+    """
+    绘制三合一图表：动作、运动状态、误差与成本。
+    
+    参数:
+        df (DataFrame): 包含动作和状态数据的数据帧，必须包含以下列:
+            - step: 训练步数
+            - action_accel: 加速度控制动作
+            - action_steer: 转向控制动作
+            - ego_vx: 车辆纵向速度
+            - cross_track_error: 横向误差
+            - heading_error: 航向误差
+            - raw_cost_potential: 路径成本值
+    
+    功能:
+        1. 第一子图：显示智能体的加速度和转向控制动作
+        2. 第二子图：显示车辆运动状态（主要是纵向速度）
+        3. 第三子图：同时显示横向误差、航向误差和路径成本
+    
+    返回:
+        无，直接显示图表
+    """
     if df.empty:
         print("数据为空，无法绘图。")
         return
@@ -96,6 +141,15 @@ def plot_actions_and_states(df):
 
 # --- 主程序入口 ---
 if __name__ == "__main__":
+    """
+    主函数：加载训练日志并生成可视化图表。
+    
+    流程:
+        1. 尝试从指定路径加载最新的日志文件
+        2. 调用绘图函数生成奖励构成分析图表
+        3. 调用绘图函数生成动作与状态分析图表
+        4. 处理可能的文件读取错误和其他异常
+    """
     try:
         # 加载最新的日志文件
         log_df = pd.read_csv("D:\Code\intersection\logs\sagi_ppo_20250819-112407\episode_1_log.csv")

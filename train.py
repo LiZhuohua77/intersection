@@ -71,10 +71,10 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train an agent for the traffic intersection environment.")
     
     # --- 实验与算法选择 ---
-    parser.add_argument("--algo", type=str, default="ppo", choices=["sagi_ppo", "ppo"], help="The reinforcement learning algorithm to use.")
+    parser.add_argument("--algo", type=str, default="sagi_ppo", choices=["sagi_ppo", "ppo"], help="The reinforcement learning algorithm to use.")
     
     # --- 训练过程参数 ---
-    parser.add_argument("--total-episodes", type=int, default=3000, help="Total episodes to train the agent.")
+    parser.add_argument("--total-episodes", type=int, default=80000, help="Total episodes to train the agent.")
     parser.add_argument("--buffer-size", type=int, default=2048, help="Size of the rollout buffer.")
     parser.add_argument("--update-epochs", type=int, default=2, help="Number of epochs to update the policy per rollout.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")

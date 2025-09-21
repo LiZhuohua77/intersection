@@ -1,35 +1,33 @@
 """
 @file: main.py
 @description:
-该文件是整个强化学习交通仿真项目的**主程序入口**。
-它负责初始化并编排仿真后端（模型 `TrafficEnv`）与可视化前端（视图/控制器 `GameEngine`）
-之间的交互，并驱动主仿真循环。
+该文件是整个强化学习交通仿真项目的主程序入口。
+它负责初始化仿真环境和可视化引擎，并驱动整个仿真过程。
+
+主要函数:
+1. parse_args(): 解析命令行参数，确定要加载的交通场景
+2. main(): 主函数，创建环境和游戏引擎，并执行主仿真循环
 
 核心职责:
 
 1.  **初始化 (Initialization):**
     - 创建并实例化两个最顶层的核心对象：
-        - `TrafficEnv`: 遵循Gymnasium接口的仿真环境，是整个仿真的“后端”或“模型”。
-        - `GameEngine`: 基于Pygame的可视化与交互引擎，是仿真的“前端”或“视图-控制器”。
+        - `TrafficEnv`: 遵循Gymnasium接口的仿真环境，是整个仿真的"后端"或"模型"。
+        - `GameEngine`: 基于Pygame的可视化与交互引擎，是仿真的"前端"或"视图-控制器"。
 
 2.  **主循环 (Main Loop):**
-    - 运行一个经典的“事件处理 -> 状态更新 -> 渲染”的游戏循环。
-    - **事件处理:** 调用 `game_engine.handle_events()` 来响应用户输入，如暂停、退出、
-      切换视角等。
-    - **状态更新:** 在非暂停状态下，调用 `env.step()` 来驱动仿真世界向前演化一步。
-    - **渲染:** 调用 `game_engine.render()` 将 `env` 的当前状态绘制到屏幕上。
+    - 运行一个经典的"事件处理 -> 状态更新 -> 渲染"的游戏循环。
+    - 事件处理: 响应用户输入，如暂停、退出、切换视角等。
+    - 状态更新: 在非暂停状态下，驱动仿真世界向前演化一步。
+    - 渲染: 将当前状态绘制到屏幕上。
 
-3.  **强化学习智能体集成 (占位符):**
-    - **注意:** 在当前版本的 `main` 函数中，智能体的动作是通过 `env.action_space.sample()`
-      生成的，即**随机动作**。
-    - 这里是为未来真正的强化学习智能体**预留的集成点**。接手开发时，需要将此行
-      替换为从训练好的策略网络获取动作的逻辑（例如 `action = agent.select_action(observation)`）。
+3.  **场景管理 (Scenario Management):**
+    - 支持多种预定义交通场景的加载和切换
+    - 分为含有RL智能体的场景和纯背景车辆的观察场景两大类
 
-4.  **回合管理 (Episode Management):**
-    - 在主循环中，它会检查 `env.step()` 返回的 `terminated` 或 `truncated` 标志，
-      以判断当前回合是否结束。
-    - 当一个回合结束后，它会打印最终奖励，调用 `matplotlib` 绘制智能体的速度曲线
-      以供分析，并自动重置环境 (`env.reset()`) 以开始新的回合。
+4.  **数据收集与可视化 (Data Collection & Visualization):**
+    - 收集RL智能体和背景车辆的速度历史数据
+    - 在回合结束时使用matplotlib绘制速度曲线进行分析
 """
 from traffic_env import TrafficEnv
 import matplotlib.pyplot as plt
@@ -38,7 +36,21 @@ import argparse
 from game_engine import GameEngine
 
 def parse_args():
-    """解析命令行参数"""
+    """
+    解析命令行参数。
+    
+    支持通过--scenario参数选择要加载的交通场景，可选场景包括：
+    - agent_only: 只有RL智能体的简单场景
+    - protected_left_turn: 受保护左转场景
+    - unprotected_left_turn: 非保护左转场景
+    - head_on_conflict: 正面交会冲突场景
+    - random: 随机场景
+    - east_west_traffic: 东西方向的纯背景车辆流
+    - north_south_traffic: 南北方向的纯背景车辆流
+    
+    返回:
+        argparse.Namespace: 包含解析后参数的命名空间对象
+    """
     parser = argparse.ArgumentParser(description="运行交通仿真环境")
     parser.add_argument("--scenario", type=str, default="head_on_conflict", 
                       choices=["agent_only", "protected_left_turn", "unprotected_left_turn", 
@@ -47,7 +59,23 @@ def parse_args():
     return parser.parse_args()
 
 def main():
-    """主函数，负责编排RL环境和游戏引擎。"""
+    """
+    主函数，负责编排RL环境和游戏引擎。
+    
+    主要步骤:
+    1. 创建交通环境(TrafficEnv)和游戏引擎(GameEngine)
+    2. 根据命令行参数加载指定场景
+    3. 执行主仿真循环:
+       - 处理用户输入事件
+       - 更新环境状态
+       - 渲染环境
+    4. 回合结束时收集和可视化车辆速度数据
+    5. 自动重置环境开始新回合
+    
+    特殊处理:
+    - 区分含RL智能体的场景和纯背景车辆场景
+    - 针对不同类型场景提供不同的数据收集和可视化方式
+    """
     # 解析命令行参数
     args = parse_args()
     

@@ -1,10 +1,34 @@
+"""
+@file: efficiency_map.py
+@description: 
+本文件用于生成和可视化永磁同步电机(SPM)的效率图和损耗图。
+主要功能包括：
+1. 基于多项式模型计算电机在不同工况点(转速、转矩)的功率损耗
+2. 生成电机完整的效率分布图和损耗分布图
+3. 考虑电机物理约束(如最大转矩限制和功率限制)
+4. 将结果保存为高质量图像文件
+
+实现方式：
+1. calculate_spm_loss_kw(): 计算SPM电机在给定转矩和转速下的功率损耗
+2. 主脚本部分：创建操作网格，计算效率和损耗，并绘制可视化图表
+"""
+
 import numpy as np
 import matplotlib.pyplot as plt
 
 def calculate_spm_loss_kw(T_inst_nm, n_inst_rpm):
     """
-    Calculates the power loss in kW for the SPM motor based on the polynomial model.
-    This is a vectorized version for grid calculations.
+    计算SPM电机在给定工况点(转矩和转速)下的功率损耗(kW)。
+    
+    基于文献中的多项式损耗模型，使用归一化参数和系数计算。
+    该函数支持矢量化计算，可同时处理整个操作网格。
+    
+    参数:
+        T_inst_nm: float或ndarray, 瞬时转矩(Nm)
+        n_inst_rpm: float或ndarray, 瞬时转速(rpm)
+        
+    返回:
+        float或ndarray: 对应工况点的功率损耗(kW)，负值被裁剪为0.01
     """
     # 1. Define base values from the paper
     T_base_nm = 250.0
@@ -72,32 +96,32 @@ loss_map_kw[invalid_mask] = np.nan
 
 # --- 3. Plot the maps ---
 plt.style.use('seaborn-v0_8-whitegrid')
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
 
-# Plot Loss Map
+# --- 绘制损耗图 ---
+fig1, ax1 = plt.subplots(figsize=(8, 6))
 loss_levels = [200, 500, 1000, 1500, 2000, 3000, 4000, 5000, 6000, 7000, 8000]
 loss_levels_kw = [l/1000.0 for l in loss_levels] # Convert W to kW for levels
 cp1 = ax1.contourf(N_grid, T_grid, loss_map_kw, levels=loss_levels_kw, cmap='viridis_r', extend='max')
 cl1 = ax1.contour(N_grid, T_grid, loss_map_kw, levels=loss_levels_kw, colors='black', linewidths=0.5)
 ax1.clabel(cl1, fmt='%1.1f', fontsize=9)
-fig.colorbar(cp1, ax=ax1, label='Power Loss [kW]')
-ax1.set_title('Calculated Power Loss Map (50kW SPM Motor)', fontsize=14)
+fig1.colorbar(cp1, ax=ax1, label='Power Loss [kW]')
 ax1.set_xlabel('Speed [rpm]', fontsize=12)
 ax1.set_ylabel('Torque [Nm]', fontsize=12)
 ax1.set_ylim(0, 150)
+plt.tight_layout()
+plt.savefig('spm_loss_map.png')
 
 
-# Plot Efficiency Map
+# --- 绘制效率图 ---
+fig2, ax2 = plt.subplots(figsize=(8, 6))
 efficiency_levels_percent = np.arange(70, 100, 2.5)
 efficiency_levels = efficiency_levels_percent / 100.0
 cp2 = ax2.contourf(N_grid, T_grid, efficiency_map, levels=efficiency_levels, cmap='jet', extend='max')
 cl2 = ax2.contour(N_grid, T_grid, efficiency_map, levels=efficiency_levels, colors='black', linewidths=0.5)
 ax2.clabel(cl2, fmt='%1.2f', fontsize=9)
-fig.colorbar(cp2, ax=ax2, label='Efficiency')
-ax2.set_title('Calculated Efficiency Map (50kW SPM Motor)', fontsize=14)
+fig2.colorbar(cp2, ax=ax2, label='Efficiency')
 ax2.set_xlabel('Speed [rpm]', fontsize=12)
 ax2.set_ylabel('Torque [Nm]', fontsize=12)
 ax2.set_ylim(0, 150)
-
 plt.tight_layout()
-plt.savefig('spm_motor_maps.png')
+plt.savefig('spm_efficiency_map.png')

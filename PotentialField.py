@@ -1,3 +1,16 @@
+"""
+@file: PotentialField.py
+@description: 该文件实现了一个势场可视化工具,用于交通路口场景中生成和可视化势场(potential field)。
+势场在自动驾驶领域用于表示不同位置的"吸引力"或"排斥力",辅助车辆路径规划和行为决策。
+
+主要功能:
+1. 生成势场数据网格 - generate_potential_field()
+2. 使用matplotlib可视化势场热力图 - visualize_as_matplotlib()
+3. 绘制道路边界 - draw_main_road_boundaries()
+4. 生成Pygame兼容的热力图 - create_pygame_heatmap()
+5. 可视化势场梯度方向 - visualize_potential_gradient()
+"""
+
 import pygame
 import numpy as np
 import matplotlib.pyplot as plt
@@ -11,8 +24,8 @@ class PotentialFieldVisualizer:
         初始化势场可视化器
         
         Args:
-            road: Road对象实例
-            resolution: 网格分辨率，值越小越精细但计算量越大
+            road (Road): Road对象实例,包含道路几何和势场计算函数
+            resolution (int): 网格分辨率(像素),值越小越精细但计算量越大
         """
         self.road = road
         self.resolution = resolution
@@ -21,13 +34,14 @@ class PotentialFieldVisualizer:
 
     def generate_potential_field(self, target_route_str=None):
         """
-        为整个场景生成势能场数据
+        为整个场景生成势能场数据网格
         
         Args:
-            target_route_str: 目标路径字符串，如'N_S'，如果为None则生成通用势场
+            target_route_str (str, optional): 目标路径字符串,如'N_S'(北到南),
+                                            如果为None则生成通用势场
             
         Returns:
-            tuple: (X网格, Y网格, 势能值矩阵)
+            tuple: (X网格, Y网格, 势能值矩阵Z),其中X和Y为二维网格坐标,Z为对应的势能值
         """
         # 创建网格
         x = np.arange(0, self.width, self.resolution)
@@ -45,14 +59,17 @@ class PotentialFieldVisualizer:
     def visualize_as_matplotlib(self, target_route_str=None, show_centerlines=True, 
                             show_boundaries=True, save_path=None, show=True):
         """
-        使用matplotlib绘制势场热力图
+        使用matplotlib绘制势场热力图并显示/保存结果
         
         Args:
-            target_route_str: 目标路径字符串
-            show_centerlines: 是否显示中心线
-            show_boundaries: 是否显示道路边界
-            save_path: 保存图像的路径，如果为None则不保存
-            show: 是否显示图像
+            target_route_str (str, optional): 目标路径字符串,如'S_N'
+            show_centerlines (bool): 是否显示道路中心线
+            show_boundaries (bool): 是否显示道路边界
+            save_path (str, optional): 保存图像的文件路径,如果为None则不保存
+            show (bool): 是否立即显示图像
+        
+        Returns:
+            None: 函数将显示和/或保存图像,但不返回值
         """
         X, Y, Z = self.generate_potential_field(target_route_str)
         
@@ -128,10 +145,13 @@ class PotentialFieldVisualizer:
 
     def draw_main_road_boundaries(self, ax):
         """
-        在matplotlib图表上绘制主道路边界
+        在matplotlib图表上绘制主道路边界线
         
         Args:
-            ax: matplotlib轴对象
+            ax (matplotlib.axes.Axes): matplotlib轴对象,用于在其上绘制边界线
+        
+        Notes:
+            绘制十字路口的四个象限边界,包括水平和垂直道路的边界线
         """
         road = self.road
         lane_width = road.lane_width
@@ -178,11 +198,14 @@ class PotentialFieldVisualizer:
         创建可叠加在Pygame界面上的热力图表面
         
         Args:
-            target_route_str: 目标路径字符串
-            alpha: 透明度(0-255)
+            target_route_str (str, optional): 目标路径字符串,用于生成特定路径的势场
+            alpha (int): 透明度值(0-255),控制热力图的透明度
             
         Returns:
-            pygame.Surface: 带有热力图的透明表面
+            pygame.Surface: 带有热力图的透明表面,可直接绘制到Pygame窗口
+        
+        Notes:
+            热力图使用色彩梯度从深紫色(低势能)到黄色(高势能)表示势场强度
         """
         X, Y, Z = self.generate_potential_field(target_route_str)
         
@@ -221,14 +244,18 @@ class PotentialFieldVisualizer:
     def visualize_potential_gradient(self, target_route_str=None, step=15, scale=50.0, 
                                     show_boundaries=True, arrow_color='yellow'):
         """
-        可视化势场的梯度方向，显示车辆会被引导向哪个方向
+        可视化势场的梯度方向,显示车辆会被引导向哪个方向
         
         Args:
-            target_route_str: 目标路径字符串
-            step: 箭头间隔，值越大箭头越稀疏
-            scale: 箭头大小比例，值越小箭头越长
-            show_boundaries: 是否显示道路边界
-            arrow_color: 箭头颜色
+            target_route_str (str, optional): 目标路径字符串
+            step (int): 箭头绘制间隔,值越大箭头越稀疏
+            scale (float): 箭头大小比例因子,值越小箭头越长
+            show_boundaries (bool): 是否显示道路边界
+            arrow_color (str): 箭头颜色
+        
+        Notes:
+            梯度箭头指向势场下降最快的方向,表示车辆在该位置的首选移动方向
+            该方法展示了车辆在任意位置会受到的"力"的方向
         """
         X, Y, Z = self.generate_potential_field(target_route_str)
         
