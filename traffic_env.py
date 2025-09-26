@@ -44,11 +44,13 @@ from gymnasium import spaces
 import numpy as np
 import pygame 
 import time
+import random
 
 from road import Road
 from traffic import TrafficManager
 from config import * 
 from vehicle import RLVehicle 
+from prediction import TrajectoryPredictor
 
 class TrafficEnv(gym.Env):
     """一个遵循Gymnasium接口的十字路口交通仿真环境。"""
@@ -64,10 +66,15 @@ class TrafficEnv(gym.Env):
         self.rl_agent = None
         self.dt = SIMULATION_DT
 
-        # 2. 定义动作和观测空间
+        self.predictor = TrajectoryPredictor(IDM_PARAMS)
+
+        # 2. [重构] 定义动作和观测空间
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
-        observation_dim = OBSERVATION_DIM 
+        
+        # 使用 config.py 中自动计算的总维度
+        observation_dim = TOTAL_OBS_DIM 
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(observation_dim,), dtype=np.float32)
+        print(f"环境已初始化，观测空间维度为: {observation_dim}")
 
         self.current_algo = 'sagi_ppo'
         
@@ -86,26 +93,76 @@ class TrafficEnv(gym.Env):
         
         self.traffic_manager.vehicle_id_counter = 1
         
-        # 使用新的方法来设置场景并生成Agent
+        # --- 步骤1: 设置场景并生成车辆 ---
         self.rl_agent = self.traffic_manager.setup_scenario(scenario)
         
-        # 检查是否为只有背景车辆的场景
-        if self.rl_agent is None and scenario in ["east_west_traffic", "north_south_traffic"]:
-            print(f"初始化纯背景车辆场景: {scenario}")
-            # 对于只有背景车辆的场景，我们返回一个dummy观测和空的info
+        if self.rl_agent is None:
+            # (处理纯背景车流场景的逻辑保持不变)
             dummy_observation = np.zeros(self.observation_space.shape, dtype=np.float32)
             info = {"is_background_only": True, "scenario": scenario}
             return dummy_observation, info
-        elif self.rl_agent is None:
-            raise RuntimeError(f"环境重置失败：无法在场景'{scenario}'中生成RL Agent。")
+
+        # --- 步骤2: [核心新增] 为HV分配个性和意图 ---
+        personalities = list(IDM_PARAMS.keys())
+        intents = ['GO', 'YIELD']
+        
+        for hv in self.traffic_manager.vehicles:
+            if not getattr(hv, 'is_rl_agent', False):
+                personality = random.choice(personalities)
+                intent = random.choice(intents)
+                # 这个新方法需要在您的Vehicle类中实现
+                hv.initialize_planner(personality, intent)
 
         self.current_algo = options.get("algo", "sagi_ppo") if options else "sagi_ppo"
 
-        observation = self.rl_agent.get_observation(self.traffic_manager.vehicles)
+        observation = self._get_observation()
         info = self._get_info()
         
         return observation, info
+    
+    def _get_observation(self):
+        """
+        [最终架构] 
+        环境负责构建完整的、包含预测的观测。
+        """
+        # 1. 从RL Agent获取基础观测 (不含场景树)
+        base_obs = self.rl_agent.get_base_observation(self.traffic_manager.vehicles)
+        
+        # 2. 寻找冲突的HV
+        relevant_hv = self.traffic_manager.get_relevant_hv_for(self.rl_agent)
+        
+        if not relevant_hv:
+            # 没有冲突车，用0填充预测部分
+            flat_yield_traj = np.zeros(PREDICTION_HORIZON * FEATURES_PER_STEP)
+            flat_go_traj = np.zeros(PREDICTION_HORIZON * FEATURES_PER_STEP)
+        else:
+            # 3. 调用环境自身的预测器生成轨迹
+            yield_traj = self.predictor.predict(
+                current_av_state=self.rl_agent.state, 
+                current_hv_state=relevant_hv.state,
+                hv_intent_hypothesis='YIELD',
+                hv_vehicle=relevant_hv
+            )
+            go_traj = self.predictor.predict(
+                current_av_state=self.rl_agent.state, 
+                current_hv_state=relevant_hv.state,
+                hv_intent_hypothesis='GO',
+                hv_vehicle=relevant_hv
+            )
+            
+            # 4. 展平并归一化轨迹
+            flat_yield_traj = self._flatten_and_normalize_trajectory(yield_traj)
+            flat_go_traj = self._flatten_and_normalize_trajectory(go_traj)
 
+        # 5. 最终拼接：基础观测 + 两条预测轨迹
+        final_obs = np.concatenate([
+            base_obs,
+            flat_yield_traj,
+            flat_go_traj
+        ]).astype(np.float32)
+        
+        return final_obs
+    
     def step(self, action):
         """执行一个时间步。"""
         # 检查是否为只有背景车辆的场景
@@ -129,34 +186,126 @@ class TrafficEnv(gym.Env):
             
             return dummy_observation, reward, terminated, truncated, info
             
-        # 正常场景下的处理
-        observation, reward, terminated, truncated, info = self.rl_agent.step(
+        # --- 核心流程 ---
+        # 1. [暂时保留] 调用RL Agent自身的step方法
+        #    RL Agent内部的 get_observation 仍会被调用，我们需要确保它能获取到预测信息
+        _observation_from_agent, reward, terminated, truncated, info = self.rl_agent.step(
             action, self.dt, self.traffic_manager.vehicles, self.current_algo
         )
 
-        if terminated or truncated:
-            # 如果结束了，就从RL Agent对象中获取完整的debug_log
-            # 并将其添加到即将返回的info字典中
-            if hasattr(self.rl_agent, 'debug_log'):
-                info['episode_log'] = self.rl_agent.debug_log
-
-        # 2. 更新所有背景车辆
+        # 2. 更新所有背景车辆 (现在它们会使用新的动态IDM逻辑)
         self.traffic_manager.update_background_traffic(self.dt)
         
-        # 3. 生成场景树并添加到info中（仅当指定了场景感知模式时）
-        if hasattr(self, 'scenario_aware') and self.scenario_aware:
-            # 可以提供RL Agent的未来动作计划（如果有的话）
-            ego_plan = None  # 在实际实现中，可能需要从智能体的策略中获取
-            scenario_tree = self.traffic_manager.generate_scenario_tree(
-                current_state=self._get_environment_state(),
-                ego_plan=ego_plan
-            )
-            info['scenario_tree'] = scenario_tree
-        
+        # 3. [重要] 调用环境自身的观测生成方法，以供下一次循环使用
+        #    虽然rl_agent.step内部自己算了一次观测，但为了与最终架构对齐，我们在这里
+        #    也计算一次，并用它作为最终返回的观测值。
+        observation = self._get_observation()
+
+        # ... (您原有的日志和info处理逻辑可以保留)
+        if terminated or truncated:
+            if hasattr(self.rl_agent, 'debug_log'):
+                info['episode_log'] = self.rl_agent.debug_log
         info.update(self._get_info())
         
         return observation, reward, terminated, truncated, info
+
+    def _get_observation(self):
+        """
+        [最终修正] 环境负责构建完整的观测，数据流完全清晰。
+        """
+        # --- 步骤1: 获取AV自身的局部状态 ---
+        av_state_vec = self.rl_agent.get_base_observation(self.traffic_manager.vehicles)
+        # 此时 av_state_vec 的长度应为 AV_OBS_DIM
+
+        # --- 步骤2: 由环境来寻找并获取最相关的HV的状态 ---
+        relevant_hv = None
+        # (寻找 relevant_hv 的逻辑不变...)
+        for v in self.traffic_manager.vehicles:
+            if not getattr(v, 'is_rl_agent', False) and self.rl_agent._does_path_conflict(v):
+                relevant_hv = v
+                break
+
+        if not relevant_hv:
+            # 没有相关的HV，用0填充HV状态和预测部分
+            hv_state_vec = np.zeros(HV_OBS_DIM)
+            flat_yield_traj = np.zeros(PREDICTION_HORIZON * FEATURES_PER_STEP)
+            flat_go_traj = np.zeros(PREDICTION_HORIZON * FEATURES_PER_STEP)
+        else:
+            # [核心修改] 环境自己获取HV的局部状态
+            # 注意：这里需要一个能返回归一化相对状态的方法
+            hv_state_vec = self._get_relative_state(relevant_hv)
+
+            # --- 步骤3: 调用预测器 (逻辑不变) ---
+            yield_traj = self.predictor.predict(
+                current_av_state=self.rl_agent.state, 
+                current_hv_state=relevant_hv.state,
+                hv_intent_hypothesis='YIELD',
+                hv_vehicle=relevant_hv
+            )
+            go_traj = self.predictor.predict(
+                current_av_state=self.rl_agent.state, 
+                current_hv_state=relevant_hv.state,
+                hv_intent_hypothesis='GO',
+                hv_vehicle=relevant_hv
+            )
+            flat_yield_traj = self._flatten_and_normalize_trajectory(yield_traj)
+            flat_go_traj = self._flatten_and_normalize_trajectory(go_traj)
+
+        # --- 步骤4: 最终拼接 ---
+        final_obs = np.concatenate([
+            av_state_vec,
+            hv_state_vec,
+            flat_yield_traj,
+            flat_go_traj
+        ]).astype(np.float32)
         
+        # --- 步骤5: 维度检查 ---
+        if final_obs.shape[0] != self.observation_space.shape[0]:
+            # [新增] 打印详细的诊断信息
+            print(f"--- 维度不匹配诊断 ---")
+            print(f"期望总维度: {self.observation_space.shape[0]}")
+            print(f"实际总维度: {final_obs.shape[0]}")
+            print(f"  - AV状态维度: {len(av_state_vec)} (期望: {AV_OBS_DIM})")
+            print(f"  - HV状态维度: {len(hv_state_vec)} (期望: {HV_OBS_DIM})")
+            print(f"  - 预测轨迹维度: {len(flat_yield_traj) + len(flat_go_traj)} (期望: {2 * PREDICTION_HORIZON * FEATURES_PER_STEP})")
+            raise ValueError("观测维度不匹配，请检查config.py和各观测函数的输出维度。")
+
+        return final_obs
+
+    def _get_relative_state(self, other_vehicle):
+        """
+        [新增] 一个辅助函数，用于计算并归一化与另一个车辆的相对状态。
+        """
+        ego_pos = np.array([self.rl_agent.state['x'], self.rl_agent.state['y']])
+        ego_vel = np.array([self.rl_agent.state['vx'], self.rl_agent.state['vy']])
+        
+        other_pos = np.array([other_vehicle.state['x'], other_vehicle.state['y']])
+        other_vel = np.array([other_vehicle.state['vx'], other_vehicle.state['vy']])
+        
+        relative_pos = other_pos - ego_pos
+        relative_vel = other_vel - ego_vel
+        
+        # 返回一个归一化的向量，维度需与config.py中的HV_OBS_DIM (4) 匹配
+        return np.array([
+            relative_pos[0] / OBSERVATION_RADIUS,
+            relative_pos[1] / OBSERVATION_RADIUS,
+            relative_vel[0] / 15.0, # 使用最大速度近似值归一化
+            relative_vel[1] / 15.0
+        ])
+
+    def _flatten_and_normalize_trajectory(self, trajectory):
+        """[新] 辅助函数，用于处理预测出的轨迹。"""
+        vec = np.array(trajectory).flatten()
+        expected_len = PREDICTION_HORIZON * FEATURES_PER_STEP
+        if len(vec) > expected_len:
+            return vec[:expected_len] / OBSERVATION_RADIUS
+        else:
+            padded_vec = np.pad(vec, (0, expected_len - len(vec)), 'constant')
+            return padded_vec / OBSERVATION_RADIUS
+
+    def _get_info(self):
+        return {"agent_speed": self.rl_agent.get_current_speed() if self.rl_agent else 0}
+
     def _get_environment_state(self):
         """
         获取当前环境的完整状态表示，用于场景树生成。

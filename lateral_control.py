@@ -150,7 +150,7 @@ class MPCController:
                 self.opti.subject_to(self.X[:, k+1] == A_k @ self.X[:, k] + B_k @ self.U[:, self.N_c-1])
 
         # 控制输入约束
-        self.opti.subject_to(self.opti.bounded(-MAX_STEER_ANGLE, self.U, MAX_STEER_ANGLE))
+        self.opti.subject_to(self.opti.bounded(-MAX_STEERING_ANGLE, self.U, MAX_STEERING_ANGLE))
         self.opti.subject_to(self.X[:, 0] == self.x0)
 
         # 设置求解器

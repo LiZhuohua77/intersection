@@ -68,16 +68,18 @@ class Road:
         self.left_turn_radius = lane_width * 2.5  # 左转半径较大
         self.right_turn_radius = lane_width * 1.5  # 右转半径较小
 
-        zone_half_size = 2 * self.lane_width
-        self.conflict_zone = pygame.Rect(
-            self.center_x - zone_half_size,
-            self.center_y - zone_half_size,
-            2 * zone_half_size,
-            2 * zone_half_size
-        )
+        self.conflict_zone_radius = 2 * self.lane_width
+        self.conflict_zone = {
+            'center': (self.center_x, self.center_y),
+            'radius': self.conflict_zone_radius
+        }
 
-        safe_stopping_distance = - (GIPPS_V_DESIRED**2)/(2*GIPPS_B)
-        self.extended_conflict_zone = self.conflict_zone.inflate(2 * safe_stopping_distance, 2 * safe_stopping_distance)
+        safe_stopping_distance = 60
+        self.extended_conflict_zone_radius = self.conflict_zone_radius + safe_stopping_distance
+        self.extended_conflict_zone = {
+            'center': (self.center_x, self.center_y),
+            'radius': self.extended_conflict_zone_radius
+        }
 
         self.conflict_matrix = CONFLICT_MATRIX
 
@@ -222,29 +224,24 @@ class Road:
         # 创建一个临时表面以支持半透明绘图
         temp_surface = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
 
-        # 1. 绘制扩展感知区 (橙色，更透明)
-        extended_color = (255, 165, 0, 0) # Semi-transparent orange
-        extended_points = [
-            self.extended_conflict_zone.topleft,
-            self.extended_conflict_zone.topright,
-            self.extended_conflict_zone.bottomright,
-            self.extended_conflict_zone.bottomleft
-        ]
-        screen_extended_points = [transform_func(p[0], p[1]) for p in extended_points]
-        pygame.draw.polygon(temp_surface, extended_color, screen_extended_points)
-        pygame.draw.polygon(temp_surface, (255, 165, 0, 80), screen_extended_points, 2) # 边界线
+        # 转换中心点坐标
+        screen_center = transform_func(*self.conflict_zone['center'])
+        p1_screen = transform_func(0, 0)
+        p2_screen = transform_func(1, 0)
+        current_zoom = p2_screen[0] - p1_screen[0]
+        # 1. 绘制扩展感知区 (橙色)
+        extended_color_fill = (255, 165, 0, 30) # Semi-transparent orange
+        extended_color_border = (255, 165, 0, 80)
+        extended_radius_px = self.extended_conflict_zone['radius'] * current_zoom        
+        pygame.draw.circle(temp_surface, extended_color_fill, screen_center, extended_radius_px)
+        pygame.draw.circle(temp_surface, extended_color_border, screen_center, extended_radius_px, 2)
 
-        # 2. 绘制核心冲突区 (红色，稍深)
-        conflict_color = (255, 0, 0, 60) # Semi-transparent red
-        conflict_points = [
-            self.conflict_zone.topleft,
-            self.conflict_zone.topright,
-            self.conflict_zone.bottomright,
-            self.conflict_zone.bottomleft
-        ]
-        screen_conflict_points = [transform_func(p[0], p[1]) for p in conflict_points]
-        pygame.draw.polygon(temp_surface, conflict_color, screen_conflict_points)
-        pygame.draw.polygon(temp_surface, (255, 0, 0, 120), screen_conflict_points, 3) # 边界线
+        # 2. 绘制核心冲突区 (红色)
+        conflict_color_fill = (255, 0, 0, 60) # Semi-transparent red
+        conflict_color_border = (255, 0, 0, 120)
+        conflict_radius_px = self.conflict_zone['radius'] * current_zoom
+        pygame.draw.circle(temp_surface, conflict_color_fill, screen_center, conflict_radius_px)
+        pygame.draw.circle(temp_surface, conflict_color_border, screen_center, conflict_radius_px, 3)
 
         # 将带有透明区域的临时表面绘制到主屏幕上
         surface.blit(temp_surface, (0, 0))
@@ -1002,9 +999,13 @@ class Road:
             return -1
                 
         path_points = self.routes[move_str]["smoothed"]
+        center_x, center_y = self.conflict_zone['center']
+        radius_sq = self.conflict_zone['radius'] ** 2
+
         for i, point in enumerate(path_points):
-            # 检查点是否在预定义的扩展冲突区矩形内
-            if self.conflict_zone.collidepoint(point[0], point[1]):
+            # 检查点是否在预定义的冲突区圆形内
+            dist_sq = (point[0] - center_x)**2 + (point[1] - center_y)**2
+            if dist_sq <= radius_sq:
                 return i # 返回第一个冲突点的索引
         
         return -1 # 如果路径不经过冲突区，返回-1
@@ -1036,8 +1037,11 @@ class Road:
         
         # 查找进入冲突区的第一个点
         entry_index = -1
+        center_x, center_y = self.extended_conflict_zone['center']
+        radius_sq = self.extended_conflict_zone['radius'] ** 2
         for i, point in enumerate(path_points):
-            if self.extended_conflict_zone.collidepoint(point[0], point[1]):
+            dist_sq = (point[0] - center_x)**2 + (point[1] - center_y)**2
+            if dist_sq <= radius_sq:
                 entry_index = i
                 break
                 

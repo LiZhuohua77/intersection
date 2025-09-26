@@ -83,6 +83,7 @@ from longitudinal_control import PIDController
 from lateral_control import MPCController
 from longitudinal_planner import LongitudinalPlanner
 from utils import check_obb_collision
+from prediction import TrajectoryPredictor
 
 def calculate_spm_loss_kw(T_inst_nm, n_inst_rpm):
     """
@@ -144,13 +145,13 @@ class Vehicle:
         self.reference_path = path_data["smoothed"] 
         self.path_points_np = np.array([[p[0], p[1]] for p in self.reference_path])
         self.path_distances = np.insert(np.cumsum(np.sqrt(np.sum(np.diff(self.path_points_np, axis=0)**2, axis=1))), 0, 0)
-
+        self.dist_to_intersection_entry = float('inf')
         # --- 车辆状态 ---
         initial_pos = self.reference_path[0]
         initial_psi = self.reference_path[1][2]
         self.state = {
             'x': initial_pos[0], 'y': initial_pos[1], 'psi': initial_psi,
-            'vx': GIPPS_V_DESIRED, 'vy': 0.0, 'psi_dot': 0.0,
+            'vx': 12.5, 'vy': 0.0, 'psi_dot': 0.0,
         }
 
         # --- 物理属性 ---
@@ -158,24 +159,10 @@ class Vehicle:
         self.width, self.length = VEHICLE_W, VEHICLE_L
 
         # --- 规划器与控制器 ---
-        vehicle_params = {'a_max': GIPPS_A, 'b_max': GIPPS_B, 'v_desired': GIPPS_V_DESIRED, 'length': self.length}
-        mpc_params = {'N': MPC_HORIZON}
-        self.planner = LongitudinalPlanner(vehicle_params, mpc_params)
+        self.planner = None  # 将在环境重置时由 initialize_planner 动态创建
         self.pid_controller = PIDController()
         self.mpc_controller = MPCController()
-
-        self.v_desired = GIPPS_V_DESIRED  # 期望速度
         
-
-        # --- 速度规划缓冲区 (Speed Profile Buffer) ---
-        self.profile_buffer_size = int(10 / SIMULATION_DT)  # 维持一个约10秒长的速度规划缓冲区
-        self.speed_profile_buffer = []                      # 存储未来速度规划的列表
-        self.current_step_index = 0                         # 指向缓冲区中当前目标速度的索引
-        self.profile_base_speed = GIPPS_V_DESIRED           # 用于自动扩展缓冲区的默认速度
-
-        self.is_yielding = False
-        
-
         # --- 仿真状态标志 ---
         self.completed = False
         self.color = (200, 200, 200)
@@ -197,43 +184,12 @@ class Vehicle:
         # 记录速度
         self.speed_history = []
 
-        self._initialize_speed_profile(all_vehicles=[])
-
-    def _initialize_speed_profile(self, all_vehicles):
-        """用Gipps基础曲线初始化速度缓冲区"""
-        self.speed_profile_buffer = self.planner.generate_initial_profile(self)
-
-    def get_current_target_speed(self, all_vehicles):
-        """安全地获取当前目标速度，并在需要时用Gipps模型动态扩展缓冲区"""
-        while self.current_step_index >= len(self.speed_profile_buffer):
-            # 获取前车 - 现在只会找同一路径上的车辆
-            leader = self.find_leader(all_vehicles)
-            
-            # 获取基础速度
-            if leader:
-                # 只有在确认是同一路径上的车辆时，才应用跟驰模型
-                base_speed = self.planner.gipps_model.calculate_target_speed(self, leader)
-                print(f"Vehicle {self.vehicle_id} following Vehicle {leader.vehicle_id} on same path {self.move_str}, speed={base_speed:.2f}")
-            else:
-                base_speed = self.v_desired
-                
-            self.speed_profile_buffer.append(base_speed)
-        return self.speed_profile_buffer[self.current_step_index]
-        
-
-    def insert_profile_patch(self, patch, method='min', start_index=None):
-        """将补丁注入缓冲区"""
-        if start_index is None: start_index = self.current_step_index
-        patch_len = len(patch)
-        required_len = start_index + patch_len
-        while len(self.speed_profile_buffer) < required_len:
-            self.speed_profile_buffer.append(self.profile_base_speed)
-        for i in range(patch_len):
-            idx = start_index + i
-            if method == 'min':
-                self.speed_profile_buffer[idx] = min(self.speed_profile_buffer[idx], patch[i])
-            elif method == 'overwrite':
-                self.speed_profile_buffer[idx] = patch[i]
+    def initialize_planner(self, personality: str, intent: str):
+        """
+        [新] 这是由 TrafficEnv 调用的新接口。
+        根据分配的个性和意图，创建并初始化车辆的纵向规划器。
+        """
+        self.planner = LongitudinalPlanner(self, personality, intent)
 
     def _update_intersection_status(self):
         """根据车辆位置更新交叉口相关的状态标志"""
@@ -245,10 +201,18 @@ class Vehicle:
         distances_to_ego = np.linalg.norm(self.path_points_np - current_pos, axis=1)
         current_path_index = np.argmin(distances_to_ego)
 
+        # --- 修改开始 ---
+        # 计算点到冲突区圆心的距离的平方
+        cz_center = self.road.conflict_zone['center']
+        cz_radius_sq = self.road.conflict_zone['radius'] ** 2
+        dist_sq_to_center = (current_pos[0] - cz_center[0])**2 + (current_pos[1] - cz_center[1])**2
+        is_currently_in = dist_sq_to_center <= cz_radius_sq
+        # --- 修改结束 ---
+
         # 更新状态机
-        if not self.road.conflict_zone.collidepoint(current_pos[0], current_pos[1]):
+        if not is_currently_in:
             # 在交叉口外
-            if current_path_index > self.decision_point_index and self.decision_point_index != -1:
+            if hasattr(self, 'decision_point_index') and current_path_index > self.decision_point_index and self.decision_point_index != -1:
                 self.is_approaching_decision_point = True
             if self.is_in_intersection: # 刚开出交叉口
                 self.has_passed_intersection = True
@@ -309,37 +273,62 @@ class Vehicle:
                 
         return leader
     
-    def update(self, dt, all_vehicles, traffic_manager=None):
-        """车辆主更新循环，采用简化的“减速让行”逻辑"""
-        if self.completed:
+    def update(self, dt, all_vehicles):
+        """
+        [重构后] 背景车辆(HV)的主更新循环。
+        流程简化为：实时规划 -> 控制 -> 执行。
+        """
+        if self.completed or not self.planner:
             return
 
-        # 1. 规划 (Planning) - 检查是否需要注入让行补丁
-        planner_command = self.planner.determine_action(self, all_vehicles)
-        
-        if planner_command['action'] == 'yield':
-            self.is_yielding = True # 标记已触发让行，避免重复
-            self.insert_profile_patch(planner_command['profile'], method='min')
+        # 1. 规划 (Planning): 实时计算当前的目标速度
+        target_speed = self.planner.get_target_speed(all_vehicles)
 
-        # 2. 提取目标速度
-        target_speed = self.get_current_target_speed(all_vehicles)
-
-        # 3. 控制与执行
+        # 2. 控制 (Control): 计算纵向力和转向角
         throttle_brake = self.pid_controller.step(target_speed, self.state['vx'], dt)
         
-        # MPC 现在总是安全的，因为车辆速度不会为0
-        future_profile = self.speed_profile_buffer[self.current_step_index:]
-        steering_angle = self.mpc_controller.solve(self.state, self.reference_path, future_profile)
+        # 为了MPC的稳定性，我们需要一个未来速度的估计。
+        # 简单起见，我们假设未来将保持当前的目标速度。
+        future_speed_profile = [target_speed] * MPC_HORIZON
+        steering_angle = self.mpc_controller.solve(self.state, self.reference_path, future_speed_profile)
         self.last_steering_angle = steering_angle
         
+        # 3. 执行 (Act): 更新物理状态
         self._update_physics(throttle_brake, steering_angle, dt)
 
-        # 4. 推进状态
-        self.current_step_index += 1
-        self._update_intersection_status()
-        self._update_visual_feedback(target_speed)
-        self._check_completion()
+        # 4. 更新辅助状态
         self.speed_history.append(self.get_current_speed())
+        self._update_intersection_status()
+        self._check_completion()
+        self._update_visual_feedback(target_speed)
+
+    def get_local_observation(self) -> np.ndarray:
+        """
+        [新] 提供一个标准的局部状态向量，供TrafficEnv的_get_observation调用。
+        这个方法对 HV 和 AV 都适用。
+        """
+        # 计算横向和航向误差
+        current_pos = np.array([self.state['x'], self.state['y']])
+        distances_to_path = np.linalg.norm(self.path_points_np - current_pos, axis=1)
+        current_path_index = np.argmin(distances_to_path)
+        cross_track_error = distances_to_path[current_path_index]
+        path_angle = self.reference_path[current_path_index][2]
+        heading_error = (self.state['psi'] - path_angle + np.pi) % (2 * np.pi) - np.pi
+        path_completion = self.get_current_longitudinal_pos() / self.path_distances[-1]
+        
+        # 返回一个归一化的向量，维度需与config.py中定义的AV_OBS_DIM或HV_OBS_DIM匹配
+        return np.array([
+            self.state['vx'] / 15.0, # 归一化vx
+            self.state['vy'] / 5.0,  # 归一化vy
+            self.state['psi_dot'] / 2.0, # 归一化psi_dot
+            np.tanh(cross_track_error / MAX_RELEVANT_CTE),
+            heading_error / np.pi,
+            path_completion
+        ])
+
+    def check_collision_with(self, other_vehicle) -> bool:
+        """[新] 将碰撞检测作为一个独立的、可被外部调用的方法"""
+        return check_obb_collision(self, other_vehicle)
 
     # --------------------------------------------------------------------------
     #  辅助方法 (Helper Methods)
@@ -349,9 +338,6 @@ class Vehicle:
         """返回车辆从仿真开始到现在的完整速度历史记录。"""
         return self.speed_history
 
-    def get_safe_stopping_distance(self):
-        """根据当前速度动态计算安全停车距离（制动距离+车长缓冲）"""
-        return 1.2 * (self.state['vx']**2) / (2 * abs(GIPPS_B)) + self.length
 
     def get_current_longitudinal_pos(self):
         """获取车辆在自身路径上的纵向投影距离"""
@@ -360,24 +346,21 @@ class Vehicle:
         current_path_index = np.argmin(distances_to_ego)
         return self.path_distances[current_path_index]
 
-    def _update_intersection_status(self):
-        """更新交叉口相关的状态标志"""
-        if self.has_passed_intersection:
-            return
-        
-        current_pos = np.array([self.state['x'], self.state['y']])
-        is_currently_in = self.road.conflict_zone.collidepoint(current_pos[0], current_pos[1])
-
-        if is_currently_in:
-            self.is_in_intersection = True
-        elif self.is_in_intersection:  # 刚驶出交叉口
-            self.has_passed_intersection = True
-            self.is_in_intersection = False
 
     def _update_visual_feedback(self, target_speed):
-        """根据当前决策更新车辆颜色，用于调试"""
-        # 如果目标速度远小于当前速度，意味着正在减速让行
-        if target_speed < self.state['vx'] - 0.5 and target_speed < GIPPS_V_DESIRED - 1.0:
+        """
+        [修正后] 根据当前决策更新车辆颜色，用于调试。
+        """
+        # [修改] 使用车辆自身的期望速度 self.planner.idm_model.v0 替代全局的 GIPPS_V_DESIRED
+        # 确保planner已经初始化
+        if not hasattr(self, 'planner') or self.planner is None:
+            self.color = (200, 200, 200) # 如果没有规划器，则为默认颜色
+            return
+
+        vehicle_desired_speed = self.planner.idm_model.v0
+        
+        # 如果目标速度远小于当前速度，并且也远小于其自身的期望速度，意味着正在减速让行
+        if target_speed < self.state['vx'] - 0.5 and target_speed < vehicle_desired_speed - 1.0:
             self.color = (255, 165, 0)  # 橙色: 正在减速让行
         elif self.is_in_intersection:
             self.color = (0, 255, 100)  # 亮绿: 正在通过交叉口
@@ -467,60 +450,6 @@ class Vehicle:
         
         # 平级处理，默认不具备优先权
         return log_lock_and_return(False, "Default_Lose", f"Priority: Vehicle {self.vehicle_id} yields to {other_vehicle.vehicle_id} using default rule")
-
-
-
-    def _estimate_entry_time(self):
-        """
-        估计车辆进入冲突区的时间，考虑减速行为。
-        """
-        entry_index = self.road.get_conflict_entry_index(f"{self.start_direction[0].upper()}_{self.end_direction[0].upper()}")
-        if entry_index == -1:
-            return float('inf')  # 如果车辆不进入冲突区，返回无穷大
-        
-        current_pos = self.get_current_longitudinal_pos()
-        entry_pos = self.path_distances[entry_index]
-        distance_to_entry = entry_pos - current_pos
-        
-        if distance_to_entry <= 0:
-            return 0  # 已经进入冲突区
-        
-        # 获取车辆当前速度
-        current_speed = self.get_current_speed()
-        if current_speed == 0:
-            return float('inf')  # 静止车辆
-        
-        # 检查是否处于让行状态
-        if hasattr(self, 'is_yielding') and self.is_yielding:
-            # 获取LongitudinalPlanner实例
-            planner = self.planner if hasattr(self, 'planner') else LongitudinalPlanner({'a_max': GIPPS_A, 'b_max': GIPPS_B, 'v_desired': GIPPS_V_DESIRED}, {'N': MPC_HORIZON})
-            
-            # 生成让行速度曲线
-            profile = planner._generate_yielding_profile(current_speed)
-            
-            # 计算覆盖distance_to_entry所需的时间
-            time = 0
-            distance_covered = 0
-            dt = planner.dt
-            
-            for v in profile:
-                if distance_covered >= distance_to_entry:
-                    break
-                distance_covered += v * dt
-                time += dt
-            
-            # 如果距离未覆盖完，假设以最后一个速度继续
-            if distance_covered < distance_to_entry:
-                remaining_distance = distance_to_entry - distance_covered
-                last_speed = profile[-1] if profile else current_speed
-                if last_speed > 0:
-                    time += remaining_distance / last_speed
-            
-            return time
-        else:
-            # 非让行状态，假设以当前速度恒速行驶
-            return distance_to_entry / current_speed
-
 
 
     def _update_physics(self, fx_total, delta, dt):
@@ -748,10 +677,11 @@ class RLVehicle(Vehicle):
         self.planner = None
         self.pid_controller = None
         self.mpc_controller = None
+        self.predictor = TrajectoryPredictor(IDM_PARAMS)
         
         # RL Agent特定属性
         self.is_rl_agent = True
-        self.color = (0, 100, 255) # 蓝色
+        self.color = (0, 100, 255) # 
         
         # 用于计算奖励和判断超时的状态
         self.steps_since_spawn = 0
@@ -762,16 +692,22 @@ class RLVehicle(Vehicle):
         self.heading_error = 0.0
         self.debug_log = []
 
-    def get_observation(self, all_vehicles):
+    def get_base_observation(self, all_vehicles):
         """
-        根据您的要求，构建观测空间。
-        观测空间 = 自身状态 + 周围车辆状态 (固定长度)
+        [重命名与简化]
+        原 get_observation -> get_base_observation
+        现在只返回基础观测（自身+周围），不再包含场景树。
         """
-        # --- 1. 自身状态 (Ego Vehicle State) ---
-        # 速度 (vx, vy), 航向角速度 (psi_dot), 横向/航向误差, 路径完成度
-        ego_vx_norm = self.state['vx'] / GIPPS_V_DESIRED
-        ego_vy_norm = self.state['vy'] / 5.0 # 假设侧向速度通常在±5内
-        ego_psi_dot_norm = self.state['psi_dot'] / 2.0 # 假设角速度通常在±2 rad/s内
+        ego_observation = self._get_ego_observation()
+
+        observation = np.array(ego_observation, dtype=np.float32)
+        return observation
+        
+    def _get_ego_observation(self):
+        """[新] 抽离出自身状态的获取逻辑，使其更清晰。"""
+        ego_vx_norm = self.state['vx'] / 15.0 # 使用数值代替GIPPS_V_DESIRED
+        ego_vy_norm = self.state['vy'] / 5.0
+        ego_psi_dot_norm = self.state['psi_dot'] / 2.0
         
         current_pos = np.array([self.state['x'], self.state['y']])
         distances_to_path = np.linalg.norm(self.path_points_np - current_pos, axis=1)
@@ -779,113 +715,69 @@ class RLVehicle(Vehicle):
         self.cross_track_error = distances_to_path[current_path_index]
         path_angle = self.reference_path[current_path_index][2]
         self.heading_error = (self.state['psi'] - path_angle + np.pi) % (2 * np.pi) - np.pi
-
-        path_state = [
-            np.tanh(self.cross_track_error / MAX_RELEVANT_CTE), # 归一化横向误差
-            self.heading_error / np.pi,                         # 归一化航向角误差
-            self.get_current_longitudinal_pos() / self.path_distances[-1] # 路径完成度
+        path_completion = self.get_current_longitudinal_pos() / self.path_distances[-1]
+        
+        return [
+            ego_vx_norm, ego_vy_norm, ego_psi_dot_norm,
+            np.tanh(self.cross_track_error / MAX_RELEVANT_CTE),
+            self.heading_error / np.pi,
+            path_completion
         ]
-        
-        ego_observation = [ego_vx_norm, ego_vy_norm, ego_psi_dot_norm] + path_state
-        if ego_observation[1] > 100:
-            print(f"Warning: High lateral speed {ego_observation[1]} detected for vehicle {self.vehicle_id}")
-        # --- 2. 周围车辆状态 (Surrounding Vehicles State) ---
-        surrounding_obs = self._get_surrounding_vehicles_observation(all_vehicles)
-        scenario_tree_obs = self._get_scenario_tree_observation(all_vehicles)
-        # --- 3. 组合成最终的扁平化向量 ---
-        observation = np.array(ego_observation + surrounding_obs + scenario_tree_obs, dtype=np.float32)
-        return observation
-
-    def _get_surrounding_vehicles_observation(self, all_vehicles):
-        """获取周围N辆最近的车辆的相对状态，并进行归一化。"""
-        ego_pos = np.array([self.state['x'], self.state['y']])
-        ego_vel = np.array([self.state['vx'], self.state['vy']])
-        
-        neighbors = []
-        for v in all_vehicles:
-            if v.vehicle_id == self.vehicle_id:
-                continue
-            
-            other_pos = np.array([v.state['x'], v.state['y']])
-            dist = np.linalg.norm(ego_pos - other_pos)
-
-            if dist < OBSERVATION_RADIUS:
-                other_vel = np.array([v.state['vx'], v.state['vy']])
-                # 计算相对位置和速度
-                relative_pos = other_pos - ego_pos
-                relative_vel = other_vel - ego_vel
-                neighbors.append((dist, relative_pos[0], relative_pos[1], relative_vel[0], relative_vel[1]))
-        
-        # 按距离排序，只取最近的N辆车
-        neighbors.sort(key=lambda x: x[0])
-        neighbors = neighbors[:NUM_OBSERVED_VEHICLES]
-        
-        # 构建观测向量
-        surrounding_obs_flat = []
-        for neighbor in neighbors:
-            # 归一化: [rel_x, rel_y, rel_vx, rel_vy]
-            surrounding_obs_flat.extend([
-                neighbor[1] / OBSERVATION_RADIUS,
-                neighbor[2] / OBSERVATION_RADIUS,
-                neighbor[3] / GIPPS_V_DESIRED,
-                neighbor[4] / GIPPS_V_DESIRED
-            ])
-            
-        # 如果车辆不足N辆，用0进行填充以保持观测向量长度固定
-        padding_len = NUM_OBSERVED_VEHICLES * 4 - len(surrounding_obs_flat)
-        if padding_len > 0:
-            surrounding_obs_flat.extend([0.0] * padding_len)
-            
-        return surrounding_obs_flat
-
 
     def _get_scenario_tree_observation(self, all_vehicles):
         """
-        【新增】获取关键交互车辆的未来速度规划作为场景树。
+        [修正后] 使用新的TrajectoryPredictor来生成场景树。
         """
-        # 定义场景树的长度（例如，观测未来2.4秒）
-        PROFILE_HORIZON_SECONDS = SCENARIO_TREE_LENGTH
-        PROFILE_LENGTH = int(PROFILE_HORIZON_SECONDS / (4 * SIMULATION_DT))
-
         # 默认情况下，两个规划都是空（用0填充）
-        cooperative_profile = [0.0] * PROFILE_LENGTH
-        aggressive_profile = [0.0] * PROFILE_LENGTH
+        flat_yield_traj = np.zeros(PREDICTION_HORIZON * FEATURES_PER_STEP)
+        flat_go_traj = np.zeros(PREDICTION_HORIZON * FEATURES_PER_STEP)
 
         # 寻找一个即将与之发生冲突的、由规则驱动的NPC车辆
         conflicting_npc = None
         for v in all_vehicles:
-            # 必须是NPC, 且与我方路径冲突, 且对方还未通过交叉口
             if not getattr(v, 'is_rl_agent', False) and self._does_path_conflict(v) and not v.has_passed_intersection:
-                # 简单起见，我们只考虑第一个找到的冲突车辆
                 conflicting_npc = v
                 break
         
-        if conflicting_npc and conflicting_npc.planner:
-            # 如果找到了冲突的NPC，调用其规划器获取两种可能的未来
-            potential_profiles = conflicting_npc.planner.get_potential_speed_profiles(conflicting_npc, all_vehicles)
-            
-            # 截取并归一化两种速度曲线
-            coop_raw = potential_profiles['cooperative'][:PROFILE_LENGTH]
-            agg_raw = potential_profiles['aggressive'][:PROFILE_LENGTH]
+        if conflicting_npc:
+            # 如果找到了冲突的NPC，调用我们自己的预测器来生成两种可能的未来
+            # 注意：self.predictor 是我们在 RLVehicle 的 __init__ 中添加的
+            yield_traj = self.predictor.predict(
+                current_av_state=self.state, 
+                current_hv_state=conflicting_npc.state,
+                hv_intent_hypothesis='YIELD',
+                hv_vehicle=conflicting_npc
+            )
+            go_traj = self.predictor.predict(
+                current_av_state=self.state, 
+                current_hv_state=conflicting_npc.state,
+                hv_intent_hypothesis='GO',
+                hv_vehicle=conflicting_npc
+            )
 
-            if len(coop_raw) > PROFILE_LENGTH:
-                indices = np.linspace(0, len(coop_raw) - 1, PROFILE_LENGTH, dtype=int)
-                coop_sampled = [coop_raw[i] for i in indices]
-                agg_sampled = [agg_raw[i] for i in indices]
-            else: # 如果原始曲线比目标还短，直接使用
-                coop_sampled = coop_raw
-                agg_sampled = agg_raw
-
-            # 归一化 (除以期望速度)
-            cooperative_profile = [v / GIPPS_V_DESIRED for v in coop_sampled]
-            aggressive_profile = [v / GIPPS_V_DESIRED for v in agg_sampled]
-
-            # 填充，以防生成的曲线不够长
-            cooperative_profile += [0.0] * (PROFILE_LENGTH - len(cooperative_profile))
-            aggressive_profile += [0.0] * (PROFILE_LENGTH - len(aggressive_profile))
+            # 归一化和展平处理
+            flat_yield_traj = self._flatten_and_normalize_trajectory(yield_traj)
+            flat_go_traj = self._flatten_and_normalize_trajectory(go_traj)
 
         # 将两条曲线展平并拼接
-        return cooperative_profile + aggressive_profile
+        return list(flat_yield_traj) + list(flat_go_traj)
+
+    def _flatten_and_normalize_trajectory(self, trajectory):
+        """
+        [新] 辅助函数，用于处理预测出的轨迹。
+        """
+        vec = np.array(trajectory).flatten()
+        
+        # 填充或截断以保证长度固定
+        expected_len = PREDICTION_HORIZON * FEATURES_PER_STEP
+        if len(vec) > expected_len:
+             vec = vec[:expected_len]
+        else:
+             vec = np.pad(vec, (0, expected_len - len(vec)), 'constant')
+
+        # 使用 OBSERVATION_RADIUS 进行归一化
+        return vec / OBSERVATION_RADIUS
+
 
     def _calculate_energy_consumption(self, commanded_accel):
         """
@@ -945,7 +837,7 @@ class RLVehicle(Vehicle):
 
 
         # 期望速度，可以设为道路限速
-        DESIRED_VELOCITY = GIPPS_V_DESIRED 
+        DESIRED_VELOCITY = 15.0
 
         # --- 1. 创建一个字典来存储所有奖励分量 ---
         reward_components = {}
@@ -1053,11 +945,11 @@ class RLVehicle(Vehicle):
         #print(f"Raw action from network: accel={action[0]:.2f}, steer={action[1]:.2f}")
         # 1. 解读并执行动作
         acceleration = action[0] * MAX_ACCELERATION
-        steering_angle = action[1] * MAX_STEERING_ANGLE
-        #steering_angle = action[1] * 0
+        #steering_angle = action[1] * MAX_STEERING_ANGLE
+        steering_angle = action[1] * 0
         self._update_physics(acceleration * self.m, steering_angle, dt)
         
-        self.state['vx'] = max(0, min(self.state['vx'], GIPPS_V_DESIRED))
+        self.state['vx'] = max(0, min(self.state['vx'], 15))
         self.last_steering_angle = steering_angle
         self.speed_history.append(self.get_current_speed())
 
@@ -1076,7 +968,12 @@ class RLVehicle(Vehicle):
         total_reward = reward_info['total_reward'] # 直接从字典获取最终奖励
 
         # --- 5. 获取新的观测值 ---
-        observation = self.get_observation(all_vehicles)
+        base_obs = self.get_base_observation(all_vehicles)
+        # b. 获取预测性场景树观测
+        scenario_tree_obs = self._get_scenario_tree_observation(all_vehicles)
+        # c. 拼接成最终的完整观测
+        observation = np.concatenate([base_obs, scenario_tree_obs]).astype(np.float32)
+
         
         # --- 6. 将本步的所有关键信息存入日志 ---
         cost = self.calculate_cost()

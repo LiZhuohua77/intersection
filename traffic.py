@@ -195,10 +195,9 @@ class TrafficManager:
         # 更新所有车辆
         for vehicle in self.vehicles[:]:
             if not getattr(vehicle, 'is_rl_agent', False):
-                vehicle.update(dt, self.vehicles, self)
+                vehicle.update(dt, self.vehicles)
             
             if vehicle.completed:
-                # 【BUG修复】只有当完成的车辆是背景车时，才将其归档到 completed_vehicles_data
                 if not getattr(vehicle, 'is_rl_agent', False):
                     print(f"背景车辆 #{vehicle.vehicle_id} 已完成路径，正在归档...")
                     self.completed_vehicles_data.append({

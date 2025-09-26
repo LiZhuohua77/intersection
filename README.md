@@ -1,184 +1,184 @@
-# 强化学习驱动的十字路口自主驾驶仿真平台
+# 强化学习驱动的十字路口仿真平台（PPO / SAGI-PPO）
 
 ## 1. 项目简介
 
-本项目是一个基于 Python 和 Pygame 构建的、面向强化学习研究的二维十字路口交通仿真平台。它旨在为开发和测试自主驾驶决策算法（尤其是无信号交叉口的通行策略）提供一个功能丰富、高度可配置且物理模型精确的虚拟环境。
+这是一个基于 Python + Pygame 的二维无信号十字路口交通仿真平台，用于开发与评估强化学习驾驶策略。当前训练/评估工作流以 PPO 与 SAGI-PPO 为主，环境遵循 Gymnasium 接口，可无缝对接主流 RL 框架。平台具备可视化引擎、可复现的场景工厂，以及更贴合真实驾驶的 NPC 分层“规划-控制”栈（纵向 IDM 决策 + 纵向 PID + 横向 MPC）。
 
-平台的核心特性包括：
+核心特性：
+- 完整 RL 工作流：`train.py`（训练）与 `evaluate.py`（可视化评估）；`main.py` 用于无策略/随机动作调试与观察
+- 标准化接口：Gymnasium `Env` 封装（`TrafficEnv`）
+- 场景工厂：一键搭建特定冲突情景，便于课程学习与压力测试
+- 物理一致性与控制：自行车模型动力学；横向 MPC（CasADi）；纵向 PID/IDM
+- 场景感知观测：内置预测器，编码冲突车辆“让行/通行”两种意图的未来轨迹到观测向量
 
-* **完整的RL工作流**: 提供了从**训练 (`train.py`)** 到 **评估 (`evaluate.py`)** 的完整脚本，支持无头（headless）训练和可视化评估。
-* **模块化架构**: 仿真后端（物理模型、交通管理）与可视化前端（游戏引擎）完全解耦。
-* **标准化接口**: 遵循 [Gymnasium](https://gymnasium.farama.org/) (前身为 Gym) 标准接口，可与主流强化学习框架（如 Stable Baselines3, Tianshou, RLlib）无缝集成。
-* **分层式控制系统**: 背景车辆（NPC）采用了一套复杂的、分层的“规划-控制”架构，使其行为更加真实和智能。
-* **高精度动力学与路径**: 采用基于“自行车模型”的车辆动力学模型，并为所有车辆规划经过平滑和等距重采样处理的高质量行驶路径。
-* **可定制的交通场景**: 支持通过“场景”模式，一键生成特定的、可复现的交通冲突情景，极大地方便了算法的针对性训练和评估。
+## 2. 代码总览
 
-## 2. 项目架构
+- 工作流入口
+  - `train.py`：训练脚本，支持 `--algo {ppo|sagi_ppo}`、断点续训、TensorBoard
+  - `evaluate.py`：加载模型并在 Pygame 可视化环境评估，保存每回合 CSV 轨迹与速度曲线
+  - `main.py`：调试用入口（随机/占位动作），查看道路、车辆与速度曲线
+- 环境与仿真
+  - `traffic_env.py`：Gymnasium 环境；构建观测；接入预测器；桥接 `TrafficManager`
+  - `traffic.py`：场景工厂与背景车辆生命周期管理
+  - `road.py`：道路/路径生成、冲突区、势场等
+  - `vehicle.py`：`Vehicle`（NPC）与 `RLVehicle`（智能体），含动力学、奖励、碰撞/偏离检查
+  - `longitudinal_planner.py`：NPC 纵向高层决策（含意图/个性、让行规则）
+  - `longitudinal_control.py`：纵向 PID 控制
+  - `lateral_control.py`：横向 MPC 控制（CasADi）
+  - `prediction.py`：场景感知预测器（两意图分支）
+  - `game_engine.py`：Pygame 可视化/交互引擎
+- 算法
+  - `ppo.py`：PPO 基线实现（Actor-Critic + GAE + 剪切比率）
+  - `sagi_ppo.py`：SAGI-PPO（奖励/成本双 Critic，基于几何关系的三情景更新策略）
+  - `ddpg.py`：DDPG 旧实现（保留供参考，当前工作流不依赖）
+- 配置
+  - `config.py`：全局参数（仿真步长、车辆参数、MPC 参数、观测维度、预测地平线等）
 
-本项目的架构设计遵循高内聚、低耦合的原则，将不同职责清晰地划分到各个模块中。
+## 3. 安装与环境
 
-```mermaid
-graph TD
-    subgraph "工作流脚本"
-        Train["train.py (训练入口)"]
-        Evaluate["evaluate.py (评估入口)"]
-        Main["main.py (调试入口)"]
-    end
-    
-    subgraph "RL 算法 (ddpg.py)"
-        Agent["DDPGAgent"]
-    end
+必需依赖（按代码实际引用）：
+- pygame（或 pygame-ce）、numpy、scipy、matplotlib、pandas
+- gymnasium、torch、tensorboard
+- casadi（横向 MPC 必需）
 
-    subgraph "前端: 可视化与交互 (game_engine.py)"
-        Engine["GameEngine (引擎)"]
-    end
+Windows PowerShell 快速安装（推荐使用虚拟环境）：
 
-    subgraph "后端: 仿真与强化学习 (traffic_env.py)"
-        Env["TrafficEnv (Gymnasium环境)"]
-    end
+```powershell
+# 1) 创建并激活虚拟环境
+python -m venv .venv
+./.venv/Scripts/Activate.ps1
 
-    subgraph "仿真核心 (Core Simulation)"
-        Traffic["TrafficManager (交通/场景管理器)"]
-        Road["Road (道路/路径生成器)"]
-        VehicleClass["Vehicle (车辆实体)"]
-    end
+# 2) 安装基础依赖（优先尝试 requirements.txt）
+pip install -r requirements.txt
 
-    subgraph "车辆组件 (Vehicle Components)"
-        RLVehicle["RLVehicle (RL智能体)"]
-        NPCVehicle["Vehicle (NPC车辆)"]
-        subgraph "NPC 大脑"
-            Planner["LongitudinalPlanner (纵向规划)"]
-            MPC["MPCController (横向控制)"]
-            PID["PIDController (纵向控制)"]
-        end
-    end
-
-    subgraph "底层工具 (Utilities)"
-        Config["config.py (全局配置)"]
-        PathSmoother["path_smoother.py (路径平滑)"]
-        Utils["utils.py (碰撞检测)"]
-    end
-
-    Train --> Agent
-    Train --> Env
-    Evaluate --> Agent
-    Evaluate --> Env
-    Evaluate --> Engine
-    Main --> Env
-    Main --> Engine
-
-    Env --> Traffic
-    Traffic --> Road
-    Traffic --> VehicleClass
-
-    VehicleClass -- is a --> RLVehicle
-    VehicleClass -- is a --> NPCVehicle
-
-    NPCVehicle --> Planner
-    NPCVehicle --> MPC
-    NPCVehicle --> PID
-
-    RLVehicle -- "提供RL接口" --> Env
+# 3) 若缺少依赖，补充安装
+pip install gymnasium torch pandas tensorboard
+pip install pygame-ce  # 或: pip install pygame
+pip install casadi     # 横向MPC所需
 ```
 
-**工作流程**:
-1.  **训练**: 运行 `train.py`，它会创建 `TrafficEnv` 和 `DDPGAgent`，在无图形界面的模式下进行高速训练，并通过 `TensorBoard` 记录日志，定期保存模型。
-2.  **评估**: 运行 `evaluate.py`，它会创建 `TrafficEnv`, `GameEngine` 和 `DDPGAgent`，加载训练好的模型，并在可视化环境中展示智能体的驾驶策略。
-3.  **调试**: 运行 `main.py`，它会使用**随机动作**来驱动智能体，主要用于测试环境本身的功能和交互。
+提示：CasADi 的二进制包在部分 Python 版本/平台上可能不可用，可参考其官方安装指南。
 
-## 3. 安装与环境配置
+## 4. 运行与使用
 
-**依赖库**:
-本项目依赖以下 Python 库。建议使用 `pip` 进行安装。
+### 4.1 训练
 
-* `pygame-ce`: 用于构建可视化引擎。
-* `numpy`: 用于进行科学计算和矩阵运算。
-* `scipy`: 用于路径重采样中的三次样条插值。
-* `casadi`: 用于模型预测控制器（MPC）的符号计算和非线性规划求解。
-* `gymnasium`: 强化学习环境的标准接口。
-* `matplotlib`: 用于在回合结束时绘制数据图表。
-* `torch`: 深度学习框架，用于实现DDPG算法。
-* `tensorboard`: 用于训练过程的可视化监控。
+```powershell
+# PPO 基线（示例）
+python train.py --algo ppo --total-episodes 2000 --buffer-size 2048 --update-epochs 4 --seed 42
 
-**建议安装步骤**:
+# SAGI-PPO（示例）
+python train.py --algo sagi_ppo --total-episodes 2000 --buffer-size 2048 --update-epochs 2 --cost-limit 30 --seed 42
 
-1.  **创建虚拟环境 (推荐)**:
-    ```bash
-    python -m venv venv
-    source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
-    ```
+# 断点续训（示例路径，指向模型目录）
+python train.py --algo sagi_ppo --resume --model-path "models/sagi_ppo_YYYYMMDD-HHMMSS"
 
-2.  **安装依赖**:
-    ```bash
-    pip install pygame-ce numpy scipy casadi gymnasium matplotlib torch tensorboard
-    ```
-
-## 4. 使用方法
-
-### 步骤一：训练智能体
-打开终端，运行 `train.py` 开始训练。
-```bash
-python train.py
-```
-* 训练过程是无图形界面的（Headless），以获得最快的训练速度。
-* 训练日志会保存在 `runs/` 目录下。您可以启动 TensorBoard 来实时监控训练过程：
-    ```bash
-    tensorboard --logdir=runs
-    ```
-* 模型权重文件（例如 `ddpg_episode_50.pth`）会周期性地保存在项目根目录。
-
-### 步骤二：评估智能体
-训练完成后，您可以在可视化环境中评估智能体的表现。
-
-1.  打开 `evaluate.py` 文件。
-2.  修改 `MODEL_PATH` 变量，使其指向您想要评估的模型文件，例如：
-    ```python
-    MODEL_PATH = "ddpg_episode_500.pth" # 替换为您训练好的模型
-    ```
-3.  保存文件，然后在终端运行：
-    ```bash
-    python evaluate.py
-    ```
-* 一个 Pygame 窗口将会打开，展示您的智能体在不同场景下的驾驶行为。
-
-### （可选）手动交互与调试
-如果您想在没有AI的情况下，仅使用随机动作与环境交互来测试或调试，可以运行 `main.py`。
-```bash
-python main.py
+# 监控训练
+tensorboard --logdir .\runs
 ```
 
-### 交互快捷键 (在 `evaluate.py` 或 `main.py` 运行时)
-* **`Space` / `P`**: 暂停 / 恢复 仿真。
-* **`鼠标左键拖拽`**: 平移视角。
-* **`鼠标滚轮`**: 缩放视角。
-* **`R`**: 重置当前仿真场景。
-* **`H`**: 在屏幕上显示/隐藏帮助菜单。
-* **`ESC` / `Q`**: 退出程序。
+产物与日志：
+- 模型：`models/<algo_timestamp>/`（最终）与 `models/<algo_timestamp>/checkpoints/`（间隔保存）
+- 训练日志：`runs/<algo_timestamp>/`（TensorBoard）与 `logs/<algo_timestamp>/training_stats.csv`
 
-## 5. 代码模块详解
+### 4.2 评估
 
-* **`train.py` / `evaluate.py`**: 项目的**核心工作流**。`train.py` 负责无头训练和保存模型，`evaluate.py` 负责加载模型并进行可视化评估。
-* **`main.py`**: 项目的**调试入口**，使用随机动作驱动智能体。
-* **`ddpg.py`**: 实现了 DDPG 强化学习算法，包含 Actor-Critic 网络和经验回放池。
-* **`game_engine.py`**: 前端可视化引擎，与仿真逻辑完全分离。
-* **`traffic_env.py`**: 实现了 `gym.Env` 接口，是RL算法与仿真世界交互的桥梁。
-* **`traffic.py`**: `TrafficManager` 类，负责车辆生命周期管理和**场景搭建**。
-* **`road.py` & `path_smoother.py`**: 定义道路几何，并使用平滑工具生成高质量轨迹。
-* **`vehicle.py`**: 定义了 `Vehicle` (NPC) 和 `RLVehicle` (智能体)。NPC拥有完整的决策-控制栈，而RL智能体则为RL算法提供了观测、奖励等核心接口。
-* **`longitudinal_planner.py`**: NPC车辆的**高级决策模块**，负责让行等复杂行为。
-* **`longitudinal_control.py` & `lateral_control.py`**: 底层的 **PID** 和 **MPC** 执行控制器。
-* **`utils.py` & `config.py`**: 分别提供**碰撞检测**工具和**全局配置**参数。
+```powershell
+# 评估 PPO
+python evaluate.py --algo ppo --model-dir "models/ppo_YYYYMMDD-HHMMSS" --num-episodes 3 --seed 8491
 
-## 6. 后续开发建议
+# 评估 SAGI-PPO
+python evaluate.py --algo sagi_ppo --model-dir "models/sagi_ppo_YYYYMMDD-HHMMSS" --num-episodes 3 --seed 233
+```
 
-1.  **正式开始训练**:
-    * 运行 `train.py`。根据机器性能，这可能需要数小时。
-    * 通过 `tensorboard` 密切关注奖励曲线，判断算法是否收敛。
+评估时将开启 Pygame 可视化窗口，默认循环场景为 `head_on_conflict`，自动保存：
+- 每回合详细日志 CSV：`evaluation_logs/<model_name>/episode_*_*.csv`
+- RL/NPC 车辆速度曲线（Matplotlib 窗口）
 
-2.  **调试与调优**:
-    * **奖励函数**: `RLVehicle.calculate_reward()` 中的权重是核心超参数，直接影响最终策略的好坏。
-    * **观测空间**: `RLVehicle.get_observation()` 定义了智能体能“看到”什么。可以尝试增减特征。
-    * **DDPG超参数**: `ddpg.py` 中的学习率、折扣因子、网络结构等都会影响训练效果。
+### 4.3 无策略调试/演示
 
-3.  **扩展新场景**:
-    * 在 `TrafficManager.setup_scenario()` 中可以轻松添加新的 `elif` 分支，创建更复杂的测试场景，以检验模型的泛化能力。
+```powershell
+python main.py --scenario head_on_conflict
+```
+
+用于快速观察道路、交通与 UI 交互；在纯背景车流场景下会绘制 NPC 速度曲线。
+
+### 4.4 交互快捷键（evaluate/main）
+
+- Space/P：暂停/继续
+- B：切换自行车模型可视化
+- D：切换调试信息
+- T：切换路径显示
+- R：重置仿真
+- 1/2/3/4：切换交通模式（轻度/正常/高峰/夜间）
+- H：帮助
+- ESC/Q：退出
+- 鼠标滚轮：缩放；鼠标拖拽：平移视角
+
+## 5. 场景与重置选项
+
+通过 `env.reset(options={"scenario": name, "algo": "ppo|sagi_ppo"})` 切换场景。
+
+内置场景（见 `traffic.py:TrafficManager.setup_scenario`）：
+- random：常规训练用（包含 RL 智能体，运行中按概率生成 NPC）
+- agent_only：仅 RL 车辆路径跟踪（基线调试）
+- protected_left_turn：Agent 左转让行直行
+- unprotected_left_turn：Agent 左转与 NPC 左转的博弈
+- head_on_conflict：迎面冲突
+- east_west_traffic：东西向 NPC 流（无 RL Agent）
+- north_south_traffic：南北向 NPC 流（无 RL Agent）
+
+无 RL 场景下，环境返回占位观测与 0 奖励，只用于交通流统计与对照数据生成。
+
+## 6. 动作与观测空间
+
+动作空间（`traffic_env.py`）：`Box(low=-1, high=1, shape=(2,))`
+- a[0]：纵向加速度（归一化）。内部映射到实际加速度范围，参考 `config.MAX_ACCELERATION`。
+- a[1]：预留横向通道（当前横向由 MPC 控制，网络输出不直接生效）。
+
+观测空间维度自动计算（`config.py`）：
+- `AV_OBS_DIM = 6`：自车局部状态（含路径误差等）
+- `HV_OBS_DIM = 4 * NUM_OBSERVED_VEHICLES`：最相关冲突 NPC 的相对状态
+- `PREDICTION_HORIZON` 与 `FEATURES_PER_STEP`：两条意图分支（YIELD/GO）的轨迹预测，共计 `2 * PREDICTION_HORIZON * FEATURES_PER_STEP`
+- `TOTAL_OBS_DIM = AV_OBS_DIM + HV_OBS_DIM + 2 * PREDICTION_HORIZON * FEATURES_PER_STEP`
+
+如调整 `NUM_OBSERVED_VEHICLES`、`PREDICTION_HORIZON` 等，请同步关注模型输入层维度与已训模型的兼容性。
+
+## 7. 关键配置（摘自 `config.py`）
+
+- 仿真：`SIMULATION_DT = 0.05`
+- 车辆：质量/几何/侧偏刚度等；`MAX_ACCELERATION = 3.0 m/s²`；`MAX_STEERING_ANGLE = 30°`
+- 控制：`MPC_HORIZON = 20`，`MPC_CONTROL_HORIZON = 5`，`PID_KP/KI/KD = 12000/800/100`
+- 观测：`OBSERVATION_RADIUS = 80`，`NUM_OBSERVED_VEHICLES = 1`
+- 预测：`PREDICTION_HORIZON = 40`，`FEATURES_PER_STEP = 3`
+
+## 8. 算法说明（简要）
+
+- PPO（`ppo.py`）
+  - Actor-Critic 前馈结构，GAE 优势，剪切比率，熵正则
+  - `RolloutBuffer` 支持 GAE 与归一化 return/advantage
+- SAGI-PPO（`sagi_ppo.py`）
+  - Actor + 双 Critic（奖励/成本），支持成本预算 `cost_limit`
+  - 通过成本盈余 c 与优势相关性 p，动态选择三情景更新（自由探索/约束权衡/紧急恢复）
+  - 记录 `sagi/*` 指标到 TensorBoard
+
+DDPG（`ddpg.py`）作为参考保留，当前工作流默认不使用。
+
+## 9. 输出与日志
+
+- 训练：`runs/<run_name>/`（TensorBoard），`logs/<run_name>/training_stats.csv`
+- 模型：`models/<run_name>/`（最终），`models/<run_name>/checkpoints/`（周期性保存）
+- 评估：`evaluation_logs/<model_name>/episode_*_*.csv`；速度曲线 Matplotlib 窗口
+
+## 10. 常见问题（FAQ）
+
+- Pygame 窗口不开启/训练卡住？训练是无头；请使用 `evaluate.py` 或 `main.py` 可视化。
+- 缺失依赖报错（例如 gymnasium/casadi/torch）？按第 3 节补齐安装。
+- 观测维度不匹配？检查 `config.py` 的维度定义与 `TrafficEnv._get_observation` 拼接逻辑是否一致。
+- MPC 求解失败？CasADi 在极低速度可能不稳定，代码带有回退（沿用上一控制）；确保 `casadi` 安装正确。
+- 性能不足/帧率低？降低窗口尺寸、隐藏热力图、减少 NPC 数量或调低渲染帧率。
+
+## 11. 许可与致谢
+
+本项目用于学术研究与教学示例，涉及到的第三方库（Gymnasium、PyTorch、Pygame、CasADi 等）请遵循各自的许可证条款。
+

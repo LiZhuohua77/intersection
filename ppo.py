@@ -32,73 +32,7 @@ def init_weights(m):
         nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
         nn.init.constant_(m.bias, 0.0)
 
-class Actor(nn.Module):
-    def __init__(self, state_dim, action_dim, hidden_dim=256):
-        """
-        策略网络，输出动作的概率分布
-        
-        Args:
-            state_dim (int): 状态空间维度
-            action_dim (int): 动作空间维度
-            hidden_dim (int): 隐藏层神经元数量
-        """
-        super(Actor, self).__init__()
-        self.net = nn.Sequential(
-            nn.Linear(state_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, action_dim),
-            nn.Tanh()
-        )
-        self.log_std = nn.Parameter(torch.zeros(1, action_dim))
-        self.apply(init_weights)
 
-    def forward(self, state):
-        """
-        根据输入状态生成动作分布
-        
-        Args:
-            state (torch.Tensor): 输入状态
-            
-        Returns:
-            torch.distributions.Normal: 表示动作策略的正态分布对象
-        """
-        mean = self.net(state)
-        std = self.log_std.exp().expand_as(mean)
-        dist = Normal(mean, std)
-        return dist
-
-class Critic(nn.Module):
-    def __init__(self, state_dim, hidden_dim=256):
-        """
-        价值网络，估计状态的价值函数
-        
-        Args:
-            state_dim (int): 状态空间维度
-            hidden_dim (int): 隐藏层神经元数量
-        """
-        super(Critic, self).__init__()
-        self.net = nn.Sequential(
-            nn.Linear(state_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1)
-        )
-        self.apply(init_weights)
-
-    def forward(self, state):
-        """
-        计算输入状态的价值估计
-        
-        Args:
-            state (torch.Tensor): 输入状态
-            
-        Returns:
-            torch.Tensor: 状态的价值估计
-        """
-        return self.net(state)
 
 class RolloutBuffer:
     """
@@ -222,119 +156,73 @@ class RolloutBuffer:
 
 
 class PPOAgent:
-    def __init__(self, state_dim, action_dim, lr=3e-4, hidden_dim=256, gamma=0.99, gae_lambda=0.95,
-                 clip_epsilon=0.2, update_epochs=10):
-        """
-        PPO算法代理，实现策略优化核心逻辑
+    """
+    [重构后] PPO算法代理。
+    现在使用一个统一的、能够处理复杂观测的HybridActorCritic网络。
+    """
+    def __init__(self, state_dim, action_dim, lr, hidden_dim, gamma, gae_lambda,
+                 clip_epsilon, update_epochs, 
+                 av_obs_dim, hv_obs_dim, traj_len, traj_feat_dim, rnn_hidden_dim=64):
         
-        Args:
-            state_dim (int): 状态空间维度
-            action_dim (int): 动作空间维度
-            lr (float): 学习率
-            hidden_dim (int): 网络隐藏层神经元数量
-            gamma (float): 折扣因子
-            gae_lambda (float): GAE lambda参数
-            clip_epsilon (float): PPO裁剪参数，限制策略更新步长
-            update_epochs (int): 每批数据的更新轮数
-        """
-        # --- 网络定义 (只有一个Critic) ---
-        self.actor = Actor(state_dim, action_dim, hidden_dim)
-        self.critic = Critic(state_dim, hidden_dim)
+        # --- 网络定义 ---
+        self.ac_network = HybridActorCritic(
+            av_obs_dim=av_obs_dim,
+            hv_obs_dim=hv_obs_dim,
+            traj_len=traj_len,
+            traj_feat_dim=traj_feat_dim,
+            action_dim=action_dim,
+            hidden_dim=hidden_dim,
+            rnn_hidden_dim=rnn_hidden_dim
+        )
 
         # --- 优化器 ---
-        self.actor_optimizer = Adam(self.actor.parameters(), lr=lr)
-        self.critic_optimizer = Adam(self.critic.parameters(), lr=lr)
+        self.optimizer = Adam(self.ac_network.parameters(), lr=lr)
 
         # --- PPO 超参数 ---
         self.clip_epsilon = clip_epsilon
         self.update_epochs = update_epochs
 
     def select_action(self, state):
-        """
-        根据当前策略选择动作（探索模式）
-        
-        Args:
-            state (np.ndarray): 当前环境状态
-            
-        Returns:
-            tuple: (动作数组, 状态价值, 动作对数概率)
-        """
         state = torch.as_tensor(state, dtype=torch.float32).unsqueeze(0)
         with torch.no_grad():
-            dist = self.actor(state)
+            dist, value = self.ac_network(state) 
             action = dist.sample()
             log_prob = dist.log_prob(action).sum(axis=-1)
-            value = self.critic(state)
         return action.numpy().flatten(), value.item(), log_prob.item()
 
     def get_deterministic_action(self, state):
-        """
-        获取确定性动作（评估模式）
-        
-        Args:
-            state (np.ndarray): 当前环境状态
-            
-        Returns:
-            np.ndarray: 确定性动作（策略分布的均值）
-            
-        Notes:
-            用于评估阶段，不进行探索
-        """
         state = torch.as_tensor(state, dtype=torch.float32).unsqueeze(0)
         with torch.no_grad():
-            dist = self.actor(state)
-            action = dist.mean # <--- 使用均值而不是sample()
+            dist, _ = self.ac_network(state)
+            action = dist.mean
         return action.numpy().flatten()
 
-    def update(self, buffer: RolloutBuffer, writer, global_step):
-        """
-        使用收集的轨迹数据更新策略和价值网络
-        
-        Args:
-            buffer (RolloutBuffer): 包含训练数据的缓冲区
-            writer: TensorBoard日志记录器
-            global_step (int): 全局训练步数
-            
-        Notes:
-            实现PPO的核心更新逻辑，包括：
-            1. 计算新旧策略的比率
-            2. 裁剪目标函数
-            3. 更新Actor和Critic网络
-        """
+    def update(self, buffer: RolloutBuffer):
         batch = buffer.get()
         
-        # --- 常规PPO更新循环 ---
-        for i in range(self.update_epochs):
-            # 1. Actor 更新
-            dist = self.actor(batch['states'])
+        for _ in range(self.update_epochs):
+            dist, values = self.ac_network(batch['states'])
+            values = values.squeeze()
+            
             new_log_probs = dist.log_prob(batch['actions']).sum(axis=-1)
             ratio = torch.exp(new_log_probs - batch['log_probs'])
             
-            # 目标优势函数就是奖励优势 A_R
+            # Actor Loss
             target_advantages = batch['advantages']
-            
             surr1 = ratio * target_advantages
             surr2 = torch.clamp(ratio, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon) * target_advantages
             actor_loss = -torch.mean(torch.min(surr1, surr2))
             
-            self.actor_optimizer.zero_grad()
-            actor_loss.backward()
-            self.actor_optimizer.step()
-
-            # 2. Critic 更新
-            values = self.critic(batch['states']).squeeze()
+            # Critic Loss
             critic_loss = nn.MSELoss()(values, batch['returns'])
-            
-            self.critic_optimizer.zero_grad()
-            critic_loss.backward()
-            self.critic_optimizer.step()
 
-            epoch_step = global_step + (i / self.update_epochs)
+            # Entropy Loss (可选，但推荐)
+            entropy_loss = -dist.entropy().mean()
 
-            writer.add_scalar("losses/actor_loss", actor_loss.item(), epoch_step)
-            writer.add_scalar("losses/critic_loss", critic_loss.item(), epoch_step)
+            # 统一优化
+            # 您可以调整 critic_loss 和 entropy_loss 的权重
+            total_loss = actor_loss + 0.5 * critic_loss + 0.01 * entropy_loss
             
-            entropy = dist.entropy().mean().item()
-            std_dev = self.actor.log_std.exp().mean().item()
-            writer.add_scalar("policy/entropy", entropy, epoch_step)
-            writer.add_scalar("policy/std_dev", std_dev, epoch_step)
+            self.optimizer.zero_grad()
+            total_loss.backward()
+            self.optimizer.step()

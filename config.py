@@ -68,26 +68,40 @@ MPC_CONTROL_HORIZON = 5  # 控制时域 M
 MPC_Q = [10.0, 180.0]     # 状态误差权重 [y_e, psi_e]
 MPC_R = [10.0]            # 控制输入权重 [delta]
 MPC_RD = [150.0]          # 控制输入变化率权重 [delta_dot]
-MAX_STEER_ANGLE = np.deg2rad(30.0) # 最大方向盘转角
 
-# Gipps 模型参数
-GIPPS_A = 1.8               # m/s^2, 期望加速度
-GIPPS_B = -3.5              # m/s^2, 期望减速度
-GIPPS_V_DESIRED = 12.5      # m/s, 期望速度 (~54 km/h)
-GIPPS_S0 = VEHICLE_L        # m, 车辆静止时的安全距离（等于车长）
-GIPPS_TAU = 1.0             # s, 驾驶员反应时间
-GIPPS_B_HAT = -3.0          # m/s^2, 对前车减速度的估计
+# IDM 驾驶员模型参数
+# v0: 期望速度 (m/s)
+# T: 安全时间间隔 (s) - 越小越激进
+# a: 最大加速度 (m/s^2)
+# b: 舒适减速度 (m/s^2) - 绝对值越大越能接受急刹车
+# s0: 最小安全车头间距 (m)
+IDM_PARAMS = {
+    'AGGRESSIVE':   {'v0': 12.5, 'T': 1.2, 'a': 2.0, 'b': 3.0, 's0': 2.0},
+    'NORMAL':       {'v0': 11.0, 'T': 1.6, 'a': 1.5, 'b': 2.0, 's0': 2.0},
+    'CONSERVATIVE': {'v0': 9.5,  'T': 2.2, 'a': 1.0, 'b': 1.5, 's0': 2.0},
+}
 
-# agent参数
-MAX_ACCELERATION = 3.0  # agent可以输出的最大加速度 (m/s^2)
-MAX_STEERING_ANGLE = np.deg2rad(0) # agent可以输出的最大转向角 (弧度)
-OBSERVATION_RADIUS = 80.0 # 观测周围车辆的半径 (米)
-NUM_OBSERVED_VEHICLES = 1 # 最多观测周围5辆车
+# === 5. [新增] 交叉口与环境参数 ===
+INTERACTION_ZONE_RADIUS = 60.0  # 交叉口交互区域的半径 (米)
 
-MAX_RELEVANT_CTE = 15.0 # 最大相关横向误差
+# === 6. [修改] 强化学习智能体与观测空间参数 ===
+# Agent 物理极限
+MAX_ACCELERATION = 3.0
+MAX_STEERING_ANGLE = np.deg2rad(30.0) # 修正: 原有MPC和Agent参数中都有定义，统一在此
 
-AGGRESSIVE_PROB = 0.5 # 背景车辆中激进驾驶员的比例
-SCENARIO_TREE_LENGTH = 2.4 # 场景树的长度 (时间步数)，例如2.4秒
+# 观测范围
+OBSERVATION_RADIUS = 80.0
+NUM_OBSERVED_VEHICLES = 1
+MAX_RELEVANT_CTE = 15.0
 
+# [新增] 预测性场景树参数
+PREDICTION_HORIZON = 40        # 预测模块向前看的时间步数 (40步 * 0.05s/步 = 2秒)
+FEATURES_PER_STEP = 3          # 每个预测时间步的特征数量 (例如: 相对x, 相对y, 速度v)
 
-OBSERVATION_DIM = 6 + 4 * NUM_OBSERVED_VEHICLES + 2*int(SCENARIO_TREE_LENGTH/(4 * SIMULATION_DT))# 6 (自身状态) + 4 * N (每辆车的状态)
+# [新增] 观测空间各部分维度定义
+AV_OBS_DIM = 6  # 智能体自身状态维度 (vx, vy, psi_dot, cte, he, path_completion)
+HV_OBS_DIM = 4 * NUM_OBSERVED_VEHICLES # 每个背景车辆的相对状态维度 (rel_x, rel_y, rel_vx, rel_vy)
+
+# [修改] 自动计算最终的观测空间总维度
+# 移除了旧的、手动的OBSERVATION_DIM计算方式
+TOTAL_OBS_DIM = AV_OBS_DIM + HV_OBS_DIM + (2 * PREDICTION_HORIZON * FEATURES_PER_STEP)
