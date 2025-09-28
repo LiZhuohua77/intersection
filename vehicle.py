@@ -692,6 +692,35 @@ class RLVehicle(Vehicle):
         self.heading_error = 0.0
         self.debug_log = []
 
+    def get_observation(self, all_vehicles):
+        """
+        [核心修正] 
+        此方法现在是观测的唯一来源，它将拼接所有需要的信息。
+        """
+        # --- 1. 自身状态 ---
+        ego_observation = self._get_ego_observation()
+        
+        # --- 2. 周围车辆状态 ---
+        surrounding_obs = self._get_surrounding_vehicles_observation(all_vehicles)
+
+        # --- 3. 场景树状态 ---
+        scenario_tree_obs = self._get_scenario_tree_observation(all_vehicles)
+
+        # --- 4. 组合成最终的扁平化向量 ---
+        final_obs = np.array(ego_observation + surrounding_obs + scenario_tree_obs, dtype=np.float32)
+
+        # --- 5. [新增] 在这里进行维度检查 ---
+        if final_obs.shape[0] != TOTAL_OBS_DIM:
+            print(f"--- 维度不匹配诊断 (来自RLVehicle.get_observation) ---")
+            print(f"期望总维度: {TOTAL_OBS_DIM}")
+            print(f"实际总维度: {final_obs.shape[0]}")
+            print(f"  - 自身状态维度: {len(ego_observation)}")
+            print(f"  - 周边车辆维度: {len(surrounding_obs)}")
+            print(f"  - 场景树维度: {len(scenario_tree_obs)}")
+            raise ValueError("观测维度不匹配，请检查config.py和各观测函数的输出维度。")
+            
+        return final_obs
+
     def get_base_observation(self, all_vehicles):
         """
         [重命名与简化]
@@ -699,8 +728,9 @@ class RLVehicle(Vehicle):
         现在只返回基础观测（自身+周围），不再包含场景树。
         """
         ego_observation = self._get_ego_observation()
+        surrounding_obs = self._get_surrounding_vehicles_observation(all_vehicles)
 
-        observation = np.array(ego_observation, dtype=np.float32)
+        observation = np.array(ego_observation + surrounding_obs, dtype=np.float32)
         return observation
         
     def _get_ego_observation(self):
@@ -723,6 +753,49 @@ class RLVehicle(Vehicle):
             self.heading_error / np.pi,
             path_completion
         ]
+
+    def _get_surrounding_vehicles_observation(self, all_vehicles):
+        """
+        [恢复后] 获取周围N辆最近的车辆的相对状态，并进行归一化。
+        """
+        ego_pos = np.array([self.state['x'], self.state['y']])
+        ego_vel = np.array([self.state['vx'], self.state['vy']])
+        
+        neighbors = []
+        for v in all_vehicles:
+            if v.vehicle_id == self.vehicle_id:
+                continue
+            
+            other_pos = np.array([v.state['x'], v.state['y']])
+            dist = np.linalg.norm(ego_pos - other_pos)
+
+            if dist < OBSERVATION_RADIUS:
+                other_vel = np.array([v.state['vx'], v.state['vy']])
+                relative_pos = other_pos - ego_pos
+                relative_vel = other_vel - ego_vel
+                neighbors.append((dist, relative_pos[0], relative_pos[1], relative_vel[0], relative_vel[1]))
+        
+        # 按距离排序，只取最近的N辆车
+        neighbors.sort(key=lambda x: x[0])
+        neighbors = neighbors[:NUM_OBSERVED_VEHICLES]
+        
+        # 构建观测向量
+        surrounding_obs_flat = []
+        for neighbor in neighbors:
+            # 归一化: [rel_x, rel_y, rel_vx, rel_vy]
+            surrounding_obs_flat.extend([
+                neighbor[1] / OBSERVATION_RADIUS,
+                neighbor[2] / OBSERVATION_RADIUS,
+                neighbor[3] / 15.0, # 使用一个合理的数值（如15m/s）进行归一化
+                neighbor[4] / 5.0
+            ])
+            
+        # 如果车辆不足N辆，用0进行填充以保持观测向量长度固定
+        padding_len = NUM_OBSERVED_VEHICLES * 4 - len(surrounding_obs_flat)
+        if padding_len > 0:
+            surrounding_obs_flat.extend([0.0] * padding_len)
+            
+        return surrounding_obs_flat
 
     def _get_scenario_tree_observation(self, all_vehicles):
         """
@@ -945,8 +1018,8 @@ class RLVehicle(Vehicle):
         #print(f"Raw action from network: accel={action[0]:.2f}, steer={action[1]:.2f}")
         # 1. 解读并执行动作
         acceleration = action[0] * MAX_ACCELERATION
-        #steering_angle = action[1] * MAX_STEERING_ANGLE
-        steering_angle = action[1] * 0
+        steering_angle = action[1] * MAX_STEERING_ANGLE
+        #steering_angle = action[1] * 0
         self._update_physics(acceleration * self.m, steering_angle, dt)
         
         self.state['vx'] = max(0, min(self.state['vx'], 15))
@@ -957,7 +1030,7 @@ class RLVehicle(Vehicle):
         is_collision = self._check_collision(all_vehicles)
         self._check_completion()
 
-        is_off_track = self._check_off_track(max_deviation=1 * self.road.lane_width)
+        is_off_track = self._check_off_track(max_deviation=3 * self.road.lane_width)
 
         terminated = self.completed or is_collision or is_off_track
         truncated = self.steps_since_spawn >= self.max_episode_steps

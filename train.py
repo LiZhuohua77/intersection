@@ -46,8 +46,15 @@ import time
 import gymnasium as gym
 from torch.utils.tensorboard import SummaryWriter
 from traffic_env import TrafficEnv
+from agent import HybridFeaturesExtractor 
+from config import *
 import numpy as np
 import random
+
+from stable_baselines3 import PPO
+from stable_baselines3.common.env_util import make_vec_env
+from stable_baselines3.common.vec_env import SubprocVecEnv
+from stable_baselines3.common.callbacks import CheckpointCallback
 
 # --- 动态导入算法 ---
 from sagi_ppo import SAGIPPOAgent, RolloutBuffer as SAGIRolloutBuffer
@@ -71,10 +78,13 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train an agent for the traffic intersection environment.")
     
     # --- 实验与算法选择 ---
-    parser.add_argument("--algo", type=str, default="sagi_ppo", choices=["sagi_ppo", "ppo"], help="The reinforcement learning algorithm to use.")
+    parser.add_argument("--algo", type=str, default="ppo", choices=["sagi_ppo", "ppo"], help="The reinforcement learning algorithm to use.")
+    parser.add_argument("--n-envs", type=int, default=1, help="Number of parallel environments to use for training.")
     
     # --- 训练过程参数 ---
-    parser.add_argument("--total-episodes", type=int, default=80000, help="Total episodes to train the agent.")
+    parser.add_argument("--total-timesteps", type=int, default=200000, help="Total timesteps to train the agent.")
+    parser.add_argument("--save-freq", type=int, default=50000, help="Save a checkpoint every N timesteps.")
+
     parser.add_argument("--buffer-size", type=int, default=2048, help="Size of the rollout buffer.")
     parser.add_argument("--update-epochs", type=int, default=2, help="Number of epochs to update the policy per rollout.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")
@@ -85,12 +95,14 @@ def parse_args():
     parser.add_argument("--gae-lambda", type=float, default=0.95, help="Lambda for the GAE advantage calculation.")
     parser.add_argument("--clip-epsilon", type=float, default=0.2, help="Clipping parameter epsilon for PPO.")
     parser.add_argument("--hidden-dim", type=int, default=256, help="Dimension of the hidden layers.")
+    parser.add_argument("--rnn-hidden-dim", type=int, default=64, help="Dimension of the GRU hidden layers for trajectory encoding.")
+
 
     # --- SAGI-PPO 专属参数 ---
     parser.add_argument("--cost-limit", type=float, default=30.0, help="Cost limit 'd' for SAGI-PPO.")
     
     # --- 继续训练参数 ---
-    parser.add_argument("--resume", action="store_true", help="Whether to resume training from a checkpoint.")
+    parser.add_argument("--resume-from", type=str, default=None, help="Path to a .zip model file to resume training from.")
     parser.add_argument("--model-path", type=str, default="D:\Code\intersection\models\ppo_20250829-083302", help="Path to the model directory for resuming training.")
     
     args = parser.parse_args()
@@ -98,215 +110,78 @@ def parse_args():
 
 def main():
     args = parse_args()
-    
-    # --- 设置随机种子 ---
     set_seed(args.seed)
-    print(f"--- Setting random seed to {args.seed} ---")
     
-    # --- 设置TensorBoard日志 ---
     run_name = f"{args.algo}_{time.strftime('%Y%m%d-%H%M%S')}"
-    writer = SummaryWriter(f"runs/{run_name}")
-    writer.add_text(
-        "hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
-    )
-
-    log_dir = f"logs/{run_name}"  # <--- 定义日志文件夹路径
-    os.makedirs(log_dir, exist_ok=True) # <--- 创建文件夹
-
-    # --- 创建环境 ---
-    env = TrafficEnv()
-    # 为环境设置种子
-    env.reset(seed=args.seed)
-    
-    state_dim = env.observation_space.shape[0]
-    action_dim = env.action_space.shape[0]
-
-    # --- 根据参数选择并初始化算法、Buffer ---
-    if args.algo == "sagi_ppo":
-        print(f"--- Using SAGI-PPO ---")
-        agent = SAGIPPOAgent(
-            state_dim=state_dim,
-            action_dim=action_dim,
-            lr=args.lr,
-            hidden_dim=args.hidden_dim,
-            gamma=args.gamma,
-            gae_lambda=args.gae_lambda,
-            clip_epsilon=args.clip_epsilon,
-            update_epochs=args.update_epochs,
-            cost_limit=args.cost_limit
-        )
-        buffer = SAGIRolloutBuffer(args.buffer_size, state_dim, action_dim, args.gamma, gae_lambda=0.95)
-    
-    elif args.algo == "ppo":
-        print(f"--- Using Standard PPO (Baseline) ---")
-        agent = PPOAgent(
-            state_dim=state_dim,
-            action_dim=action_dim,
-            lr=args.lr,
-            hidden_dim=args.hidden_dim,
-            gamma=args.gamma,
-            gae_lambda=args.gae_lambda,
-            clip_epsilon=args.clip_epsilon,
-            update_epochs=args.update_epochs
-        )
-        buffer = PPORolloutBuffer(args.buffer_size, state_dim, action_dim, args.gamma, gae_lambda=0.95)
-
-    # --- 如果需要，从现有模型加载参数 ---
-    if args.resume and args.model_path is not None:
-        print(f"--- Resuming training from {args.model_path} ---")
-        if args.algo == "sagi_ppo":
-            actor_path = os.path.join(args.model_path, "sagi_ppo_actor.pth")
-            critic_r_path = os.path.join(args.model_path, "sagi_ppo_critic_r.pth")
-            critic_c_path = os.path.join(args.model_path, "sagi_ppo_critic_c.pth")
-            
-            if os.path.exists(actor_path) and os.path.exists(critic_r_path) and os.path.exists(critic_c_path):
-                agent.actor.load_state_dict(torch.load(actor_path))
-                agent.critic_r.load_state_dict(torch.load(critic_r_path))
-                agent.critic_c.load_state_dict(torch.load(critic_c_path))
-                print("Successfully loaded SAGI-PPO model")
-            else:
-                print("Warning: Could not find model files, starting with fresh model")
-        
-        elif args.algo == "ppo":
-            actor_path = os.path.join(args.model_path, "ppo_actor.pth")
-            critic_path = os.path.join(args.model_path, "ppo_critic.pth")
-            
-            if os.path.exists(actor_path) and os.path.exists(critic_path):
-                agent.actor.load_state_dict(torch.load(actor_path))
-                agent.critic.load_state_dict(torch.load(critic_path))
-                print("Successfully loaded PPO model")
-            else:
-                print("Warning: Could not find model files, starting with fresh model")
-
-    # --- 保存配置信息 ---
-    config_path = os.path.join(log_dir, "config.txt")
-    with open(config_path, 'w') as f:
-        f.write(f"Algorithm: {args.algo}\n")
-        f.write(f"Seed: {args.seed}\n")
-        for key, value in vars(args).items():
-            f.write(f"{key}: {value}\n")
-    print(f"Configuration saved to {config_path}")
-    
-    # --- 训练主循环（基于episode） ---
-    total_timesteps = 0
-    episode_count = 0
-
-    # 创建一个字典用于记录训练指标
-    training_stats = {
-        'episode_rewards': [],
-        'episode_costs': [],
-        'episode_lengths': []
-    }
-    
-    for episode in range(args.total_episodes):
-        state, _ = env.reset(options={'scenario': 'head_on_conflict', 'algo': args.algo})
-        episode_reward = 0
-        episode_cost = 0
-        episode_len = 0
-        episode_reward_components = {}  # 用于累积各奖励分量
-        done = False
-        
-        while not done:
-            # 选择动作
-            if args.algo == "sagi_ppo":
-                action, value_r, value_c, log_prob = agent.select_action(state)
-            elif args.algo == "ppo":
-                action, value, log_prob = agent.select_action(state)
-            
-            # 执行动作
-            next_state, reward, terminated, truncated, info = env.step(action)
-            cost = info.get('cost', 0)
-            done = terminated or truncated
-
-            for key, value in info.items():
-                if key.startswith('reward_'):
-                    episode_reward_components[key] = episode_reward_components.get(key, 0) + value
-            
-            # 存储经验
-            if args.algo == "sagi_ppo":
-                buffer.store(state, action, reward, cost, done, value_r, value_c, log_prob)
-            elif args.algo == "ppo":
-                buffer.store(state, action, reward, done, value, log_prob)
-            
-            # 更新状态和记录
-            state = next_state
-            episode_reward += reward
-            episode_cost += cost
-            episode_len += 1
-            total_timesteps += 1
-            
-            # 如果buffer满了，进行一次更新
-            if buffer.ptr == args.buffer_size:
-                agent.update(buffer, writer, total_timesteps)
-        
-        # 一个episode结束后记录信息
-        episode_count += 1
-        print(f"Episode: {episode+1}/{args.total_episodes}, Algo: {args.algo}, EpReward: {episode_reward:.2f}, EpCost: {episode_cost:.2f}, EpLen: {episode_len}")
-        writer.add_scalar("charts/episode_reward", episode_reward, episode)
-        writer.add_scalar("charts/episode_cost", episode_cost, episode)
-        writer.add_scalar("charts/episode_length", episode_len, episode)
-        writer.add_scalar("charts/total_timesteps", total_timesteps, episode)
-
-        if episode_len > 0:
-            for key, total_value in episode_reward_components.items():
-                # 去掉 'reward_' 前缀，并计算平均值
-                metric_name = key[len('reward_'):]
-                avg_value = total_value / episode_len
-                writer.add_scalar(f"rewards/{metric_name}", avg_value, episode)
-
-        # 保存训练统计信息
-        training_stats['episode_rewards'].append(episode_reward)
-        training_stats['episode_costs'].append(episode_cost)
-        training_stats['episode_lengths'].append(episode_len)
-        # 保存前1个episode的详细日志
-        if episode < 1:
-            if 'episode_log' in info:
-                log_data = info['episode_log']
-                df = pd.DataFrame(log_data)
-                log_filename = os.path.join(log_dir, f"episode_{episode+1}_log.csv")
-                df.to_csv(log_filename, index=False)
-                print(f"成功保存回合 {episode+1} 的日志到: {log_filename}")
-
-        # 每100个episode保存一次中间模型
-        if (episode + 1) % 10000 == 0:
-            model_save_dir = f"models/{run_name}/checkpoints"
-            os.makedirs(model_save_dir, exist_ok=True)
-            
-            if args.algo == "sagi_ppo":
-                torch.save(agent.actor.state_dict(), os.path.join(model_save_dir, f"sagi_ppo_actor_ep{episode+1}.pth"))
-                torch.save(agent.critic_r.state_dict(), os.path.join(model_save_dir, f"sagi_ppo_critic_r_ep{episode+1}.pth"))
-                torch.save(agent.critic_c.state_dict(), os.path.join(model_save_dir, f"sagi_ppo_critic_c_ep{episode+1}.pth"))
-            elif args.algo == "ppo":
-                torch.save(agent.actor.state_dict(), os.path.join(model_save_dir, f"ppo_actor_ep{episode+1}.pth"))
-                torch.save(agent.critic.state_dict(), os.path.join(model_save_dir, f"ppo_critic_ep{episode+1}.pth"))
-            
-            print(f"Saved checkpoint at episode {episode+1}")
-    
-    env.close()
-    writer.close()
-    
-    # 保存训练统计数据
-    stats_df = pd.DataFrame(training_stats)
-    stats_df.to_csv(os.path.join(log_dir, "training_stats.csv"), index=False)
-    
-    # --- 保存最终训练好的模型 ---
-    print("--- Saving trained model ---")
+    log_dir = f"logs/{run_name}"
     model_save_dir = f"models/{run_name}"
+    os.makedirs(log_dir, exist_ok=True)
     os.makedirs(model_save_dir, exist_ok=True)
 
-    if args.algo == "sagi_ppo":
-        torch.save(agent.actor.state_dict(), os.path.join(model_save_dir, "sagi_ppo_actor.pth"))
-        torch.save(agent.critic_r.state_dict(), os.path.join(model_save_dir, "sagi_ppo_critic_r.pth"))
-        torch.save(agent.critic_c.state_dict(), os.path.join(model_save_dir, "sagi_ppo_critic_c.pth"))
-    elif args.algo == "ppo":
-        torch.save(agent.actor.state_dict(), os.path.join(model_save_dir, "ppo_actor.pth"))
-        torch.save(agent.critic.state_dict(), os.path.join(model_save_dir, "ppo_critic.pth"))
+    # --- 1. [核心改进] 创建并行化的 Gym 环境 ---
+    # 这是提升训练速度的关键
+    env = make_vec_env(TrafficEnv, n_envs=args.n_envs, vec_env_cls=SubprocVecEnv,
+                       env_kwargs=dict(scenario='head_on_conflict'))
 
-    print(f"Model saved to: {model_save_dir}")
+    # --- 2. [核心改进] 定义自定义策略网络参数 ---
+    policy_kwargs = dict(
+        features_extractor_class=HybridFeaturesExtractor,
+        features_extractor_kwargs=dict(
+            av_obs_dim=AV_OBS_DIM,
+            hv_obs_dim=HV_OBS_DIM,
+            traj_len=PREDICTION_HORIZON,
+            traj_feat_dim=FEATURES_PER_STEP,
+            rnn_hidden_dim=args.rnn_hidden_dim
+        ),
+        net_arch=dict(pi=[args.hidden_dim, args.hidden_dim], vf=[args.hidden_dim, args.hidden_dim])
+    )
+
+    # --- 3. [核心改进] 初始化或加载SB3模型 ---
+    if args.resume_from:
+        print(f"--- Resuming training from {args.resume_from} ---")
+        model = PPO.load(args.resume_from, env=env, tensorboard_log=f"runs/{run_name}")
+    else:
+        print(f"--- Starting a new training run ---")
+        model = PPO(
+            "MlpPolicy",
+            env,
+            policy_kwargs=policy_kwargs,
+            verbose=1,
+            tensorboard_log=f"runs/{run_name}",
+            # 可以直接在这里设置PPO的超参数
+            n_steps=2048,
+            batch_size=64,
+            n_epochs=10,
+            gamma=0.99,
+            gae_lambda=0.95,
+            clip_range=0.2,
+            learning_rate=3e-4
+        )
+        
+    # --- 4. [核心改进] 使用SB3的回调函数来保存检查点 ---
+    checkpoint_callback = CheckpointCallback(
+        save_freq=max(args.save_freq // args.n_envs, 1),
+        save_path=os.path.join(model_save_dir, "checkpoints"),
+        name_prefix="ppo_model"
+    )
+
+    # --- 5. [核心改进] 开始训练 ---
+    # SB3的learn方法封装了所有复杂的训练循环
+    print("--- Starting training ---")
+    model.learn(
+        total_timesteps=args.total_timesteps,
+        callback=checkpoint_callback,
+        reset_num_timesteps=(not args.resume_from) # 如果是新训练，则重置时间步计数
+    )
+
+    # --- 6. [核心改进] 保存最终模型 ---
+    final_model_path = os.path.join(model_save_dir, "final_model.zip")
+    model.save(final_model_path)
+    
     print("--- Training finished ---")
-    print(f"Total timesteps: {total_timesteps}")
-    print(f"Total episodes: {episode_count}")
+    print(f"Final model saved to: {final_model_path}")
+    
+    env.close()
 
 if __name__ == "__main__":
     main()

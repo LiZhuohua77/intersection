@@ -28,10 +28,9 @@ import numpy as np
 import pandas as pd
 import random
 import matplotlib.pyplot as plt
+from stable_baselines3 import PPO
 from game_engine import GameEngine
 from traffic_env import TrafficEnv
-from sagi_ppo import SAGIPPOAgent
-from ppo import PPOAgent
 
 def set_seed(seed):
     """
@@ -64,9 +63,9 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate a trained PPO/SAGI-PPO agent.")
     parser.add_argument("--algo", type=str, default="ppo", choices=["sagi_ppo", "ppo"],
                         help="The algorithm of the trained agent to evaluate.")
-    parser.add_argument("--model-dir", type=str,  default="models/ppo_scenario",
+    parser.add_argument("--model_path", type=str,  default="D:/Code/intersection/models/final_model.zip",
                         help="Path to the directory containing the saved model files (e.g., 'models/sagi_ppo_YYYYMMDD-HHMMSS').")
-    parser.add_argument("--num-episodes", type=int, default=1, 
+    parser.add_argument("--num-episodes", type=int, default=10, 
                         help="Number of episodes to run for evaluation.")
     parser.add_argument("--seed", type=int, default=8491,
                         help="Random seed for reproducibility.")#8491是激进的 233是保守的
@@ -93,46 +92,22 @@ def main():
     print(f"--- Setting random seed to {args.seed} ---")
     
     # --- 2. 创建环境和游戏引擎 ---
-    env = TrafficEnv()
+    env = TrafficEnv(scenario='head_on_conflict')
     # 为环境设置种子
     env.reset(seed=args.seed)
     
     game_engine = GameEngine(width=800, height=800) # 可以调大窗口以便观察
 
-    # --- 3. 根据算法选择，创建Agent并加载模型 ---
-    state_dim = env.observation_space.shape[0]
-    action_dim = env.action_space.shape[0]
-    
-    agent = None
-    if args.algo == "sagi_ppo":
-        print("--- Loading SAGI-PPO Agent ---")
-        agent = SAGIPPOAgent(state_dim=state_dim, action_dim=action_dim)
-        actor_path = os.path.join(args.model_dir, "sagi_ppo_actor.pth")
-        critic_r_path = os.path.join(args.model_dir, "sagi_ppo_critic_r.pth")
-        critic_c_path = os.path.join(args.model_dir, "sagi_ppo_critic_c.pth")
+    print(f"--- Loading Stable Baselines3 PPO Agent from {args.model_path} ---")
+    try:
+        model = PPO.load(args.model_path, env=env)
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        print("请确保您提供的路径是一个由Stable Baselines3保存的.zip模型文件，")
+        print("并且您的agent.py, config.py等文件与训练时保持一致。")
+        return
 
-        agent.actor.load_state_dict(torch.load(actor_path))
-        agent.critic_r.load_state_dict(torch.load(critic_r_path))
-        agent.critic_c.load_state_dict(torch.load(critic_c_path))
-        
-    elif args.algo == "ppo":
-        print("--- Loading PPO Agent ---")
-        agent = PPOAgent(state_dim=state_dim, action_dim=action_dim)
-        actor_path = os.path.join(args.model_dir, "ppo_actor.pth")
-        critic_path = os.path.join(args.model_dir, "ppo_critic.pth")
-
-        agent.actor.load_state_dict(torch.load(actor_path))
-        agent.critic.load_state_dict(torch.load(critic_path))
-
-    # 将网络设置为评估模式
-    agent.actor.eval()
-    if isinstance(agent, SAGIPPOAgent):
-        agent.critic_r.eval()
-        agent.critic_c.eval()
-    else:
-        agent.critic.eval()
-
-    model_name = os.path.basename(args.model_dir) # 从模型路径获取名字
+    model_name = os.path.splitext(os.path.basename(args.model_path))[0]
     log_save_dir = os.path.join("evaluation_logs", model_name)
     os.makedirs(log_save_dir, exist_ok=True)
     print(f"评估日志将保存在: {log_save_dir}")
@@ -142,7 +117,6 @@ def main():
     with open(eval_config_path, 'w') as f:
         f.write(f"Evaluation date: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write(f"Algorithm: {args.algo}\n")
-        f.write(f"Model path: {args.model_dir}\n")
         f.write(f"Number of episodes: {args.num_episodes}\n")
         f.write(f"Seed: {args.seed}\n")
     print(f"Evaluation configuration saved to {eval_config_path}")
@@ -153,7 +127,7 @@ def main():
         "success": 0, "collision": 0, "timeout": 0
     }
     
-    scenarios = ['head_on_conflict']
+    scenarios = ['unprotected_left_turn']
 
     print(f"--- 开始评估, 运行 {args.num_episodes} 个回合 ---")
     try:
@@ -170,7 +144,7 @@ def main():
                 
                 if not game_engine.input_handler.paused:
                     # --- 5. 使用确定性动作 ---
-                    action = agent.get_deterministic_action(state)
+                    action, _states = model.predict(state, deterministic=True)
                     
                     next_state, reward, terminated, truncated, info = env.step(action)
                     state = next_state
@@ -262,7 +236,7 @@ def main():
                                 plt.tight_layout()
 
                         # 显示所有创建的图表
-                        plt.show()
+                        #plt.show()
 
                         break # 结束当前回合的循环
                 

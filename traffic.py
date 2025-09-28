@@ -39,6 +39,7 @@ import random
 import time
 import numpy as np
 from vehicle import Vehicle, RLVehicle
+from config import *
 
 class TrafficManager:
     """交通流量管理器"""
@@ -151,20 +152,29 @@ class TrafficManager:
         return True
     
     def spawn_vehicle(self, start_direction):
-        """在指定方向生成车辆"""
+        """[修正后] 在指定方向生成车辆，并立即初始化其行为规划器。"""
         if not self.can_spawn_vehicle(start_direction):
             return None
         
         end_direction = self.get_random_destination(start_direction)
         
         try:
+            # 1. 创建车辆实例 (逻辑不变)
             vehicle = Vehicle(self.road, start_direction, end_direction, self.vehicle_id_counter)
             
+            # 2. [核心修正] 为新生成的车辆注入个性和意图
+            personalities = list(IDM_PARAMS.keys())
+            intents = ['GO', 'YIELD']
+            personality = random.choice(personalities)
+            intent = random.choice(intents)
+            vehicle.initialize_planner(personality, intent) # <--- 关键新增行
+            
+            # 3. 将完全初始化的车辆添加到场景中
             self.vehicles.append(vehicle)
             self.vehicle_id_counter += 1
             self.last_spawn_time[start_direction] = time.time()
             
-            print(f"生成车辆 #{vehicle.vehicle_id}: 从 {start_direction} 到 {end_direction}")
+            print(f"生成车辆 #{vehicle.vehicle_id}: 从 {start_direction} 到 {end_direction} (个性: {personality}, 意图: {intent})")
             return vehicle
         except ValueError as e:
             print(f"无法生成车辆: {e}")
@@ -301,10 +311,10 @@ class TrafficManager:
             # 场景：Agent从南向西左转，北向东左转的背景车需要让行Agent
             agent = self.spawn_rl_agent('south', 'west')
             # 生成一辆路权劣势的背景车
-            bg_vehicle = Vehicle(self.road, 'north', 'east', self.vehicle_id_counter)
+            bg_vehicle = Vehicle(self.road, 'north', 'south', self.vehicle_id_counter)
             self.vehicles.append(bg_vehicle)
             self.vehicle_id_counter += 1
-            print(f"背景车辆 #{bg_vehicle.vehicle_id}: 从北向东左转")
+            print(f"背景车辆 #{bg_vehicle.vehicle_id}: 从北向南直行")
 
         elif scenario_name == "head_on_conflict":
              # 场景：Agent从南向西左转，对向车辆从北向东也左转，测试博弈
@@ -312,7 +322,7 @@ class TrafficManager:
             bg_vehicle = Vehicle(self.road, 'west', 'east', self.vehicle_id_counter)
             self.vehicles.append(bg_vehicle)
             self.vehicle_id_counter += 1
-            print(f"背景车辆 #{bg_vehicle.vehicle_id}: 从北向东左转")
+            print(f"背景车辆 #{bg_vehicle.vehicle_id}: 从东向西直行")
 
         elif scenario_name == "agent_only":
             # 场景：只有Agent，用于测试基本路径跟踪性能
