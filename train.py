@@ -79,7 +79,7 @@ def parse_args():
     
     # --- 实验与算法选择 ---
     parser.add_argument("--algo", type=str, default="ppo", choices=["sagi_ppo", "ppo"], help="The reinforcement learning algorithm to use.")
-    parser.add_argument("--n-envs", type=int, default=1, help="Number of parallel environments to use for training.")
+    parser.add_argument("--n-envs", type=int, default=45, help="Number of parallel environments to use for training.")
     
     # --- 训练过程参数 ---
     parser.add_argument("--total-timesteps", type=int, default=200000, help="Total timesteps to train the agent.")

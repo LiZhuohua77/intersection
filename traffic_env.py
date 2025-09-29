@@ -83,45 +83,50 @@ class TrafficEnv(gym.Env):
         self.scenario_aware = False  # 默认关闭，可以通过reset的options参数开启
 
     def reset(self, seed=None, options=None):
-        """重置环境到初始状态，可以根据options设置特定场景。"""
-        super().reset(seed=seed)
-        
-        # 从options字典中获取场景名称，如果没有则默认为"random"
-        if options and "scenario" in options:
-            scenario = options.get("scenario")
-        else:
-            scenario = self.default_scenario
-        
-        # 检查是否启用场景感知模式
-        self.scenario_aware = options.get("scenario_aware", False) if options else False
-        
-        self.traffic_manager.vehicle_id_counter = 1
-        
-        # --- 步骤1: 设置场景并生成车辆 ---
-        self.rl_agent = self.traffic_manager.setup_scenario(scenario)
-        
-        if self.rl_agent is None:
-            # (处理纯背景车流场景的逻辑保持不变)
-            dummy_observation = np.zeros(self.observation_space.shape, dtype=np.float32)
-            info = {"is_background_only": True, "scenario": scenario}
-            return dummy_observation, info
+            """
+            [修正后] 确保正确处理传入的options来设置场景和HV行为。
+            """
+            super().reset(seed=seed)
+            
+            # --- 步骤1: [核心修正] 在设置新场景之前，清空所有旧的车辆数据 ---
+            #  这是解决问题的关键！
+            if hasattr(self.traffic_manager, 'vehicles'):
+                self.traffic_manager.vehicles.clear()
+            if hasattr(self.traffic_manager, 'completed_vehicles_data'):
+                self.traffic_manager.completed_vehicles_data.clear()
+            # -------------------------------------------------------------
 
-        # --- 步骤2: [核心新增] 为HV分配个性和意图 ---
-        personalities = list(IDM_PARAMS.keys())
-        intents = ['GO', 'YIELD']
-        
-        for hv in self.traffic_manager.vehicles:
-            if not getattr(hv, 'is_rl_agent', False):
-                personality = random.choice(personalities)
-                intent = random.choice(intents)
-                hv.initialize_planner(personality, intent)
+            # --- 步骤2: 正确解析 scenario ---
+            scenario = options.get("scenario", self.default_scenario) if options else self.default_scenario
+            
+            self.traffic_manager.vehicle_id_counter = 1
+            
+            # --- 步骤3: 设置场景并生成车辆 ---
+            self.rl_agent = self.traffic_manager.setup_scenario(scenario)
+            
+            if self.rl_agent is None:
+                dummy_observation = np.zeros(self.observation_space.shape, dtype=np.float32)
+                info = {"is_background_only": True, "scenario": scenario}
+                return dummy_observation, info
 
-        self.current_algo = options.get("algo", "sagi_ppo") if options else "sagi_ppo"
+            # --- 步骤4: 为HV分配指定的或随机的个性和意图 ---
+            forced_personality = options.get("hv_personality") if options else None
+            forced_intent = options.get("hv_intent") if options else None
 
-        observation = self.rl_agent.get_observation(self.traffic_manager.vehicles)
-        info = self._get_info()
-        
-        return observation, info
+            personalities = list(IDM_PARAMS.keys())
+            intents = ['GO', 'YIELD']
+            
+            for hv in self.traffic_manager.vehicles:
+                if not getattr(hv, 'is_rl_agent', False):
+                    personality = forced_personality if forced_personality else random.choice(personalities)
+                    intent = forced_intent if forced_intent else random.choice(intents)
+                    hv.initialize_planner(personality, intent)
+            
+            # --- 步骤5: 获取并返回初始观测 ---
+            observation = self.rl_agent.get_observation(self.traffic_manager.vehicles)
+            info = self._get_info()
+            
+            return observation, info
 
     
     def step(self, action):

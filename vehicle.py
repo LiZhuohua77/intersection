@@ -451,6 +451,29 @@ class Vehicle:
         # 平级处理，默认不具备优先权
         return log_lock_and_return(False, "Default_Lose", f"Priority: Vehicle {self.vehicle_id} yields to {other_vehicle.vehicle_id} using default rule")
 
+    def _estimate_entry_time(self) -> float:
+            """
+            [新增] 估算车辆到达交叉口入口点所需的时间（秒）。
+            
+            这是一个简单的物理估算，用于路权判断。
+            
+            返回:
+                float: 预计到达时间（秒）。如果车辆静止，则返回一个极大值。
+            """
+            # 获取到交叉口入口的剩余路径距离
+            distance = self.dist_to_intersection_entry
+            
+            # 获取车辆当前的纵向速度
+            current_speed = self.state['vx']
+            
+            # 为避免除以零的错误，如果车辆基本静止，我们认为它需要无穷长时间才能到达
+            if current_speed < 0.1:
+                return float('inf')
+                
+            # 核心估算：时间 = 距离 / 速度
+            estimated_time = distance / current_speed
+            
+            return estimated_time
 
     def _update_physics(self, fx_total, delta, dt):
         """
@@ -1025,6 +1048,8 @@ class RLVehicle(Vehicle):
         self.state['vx'] = max(0, min(self.state['vx'], 15))
         self.last_steering_angle = steering_angle
         self.speed_history.append(self.get_current_speed())
+
+        self._update_intersection_status()
 
         # 2. 检查终止条件 (核心修改：移除了 is_out_of_bounds)
         is_collision = self._check_collision(all_vehicles)

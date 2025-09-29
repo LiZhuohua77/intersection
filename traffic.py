@@ -159,7 +159,7 @@ class TrafficManager:
         end_direction = self.get_random_destination(start_direction)
         
         try:
-            # 1. 创建车辆实例 (逻辑不变)
+            # 1. 创建车辆实例
             vehicle = Vehicle(self.road, start_direction, end_direction, self.vehicle_id_counter)
             
             # 2. [核心修正] 为新生成的车辆注入个性和意图
@@ -167,7 +167,7 @@ class TrafficManager:
             intents = ['GO', 'YIELD']
             personality = random.choice(personalities)
             intent = random.choice(intents)
-            vehicle.initialize_planner(personality, intent) # <--- 关键新增行
+            vehicle.initialize_planner(personality, intent)
             
             # 3. 将完全初始化的车辆添加到场景中
             self.vehicles.append(vehicle)
@@ -204,9 +204,14 @@ class TrafficManager:
         
         # 更新所有车辆
         for vehicle in self.vehicles[:]:
+            # [核心修正] 将此行移出if语句，为所有车辆（包括RL Agent）更新其环境上下文
+            self._update_vehicle_context(vehicle)
+            
+            # 仅更新背景车辆(HV)的决策和物理状态
             if not getattr(vehicle, 'is_rl_agent', False):
                 vehicle.update(dt, self.vehicles)
             
+            # 处理车辆完成的逻辑（这部分保持不变）
             if vehicle.completed:
                 if not getattr(vehicle, 'is_rl_agent', False):
                     print(f"背景车辆 #{vehicle.vehicle_id} 已完成路径，正在归档...")
@@ -216,12 +221,30 @@ class TrafficManager:
                         'history': vehicle.get_speed_history()
                     })
                 else:
-                    # 如果是RL Agent完成了，只打印信息，不归档
                     print(f"RL Agent 已完成路径。")
                 
-                # 从活动车辆列表中移除
                 self.vehicles.remove(vehicle)
-    
+
+    def _update_vehicle_context(self, vehicle):
+        """
+        [新] 辅助函数，用于更新车辆需要从环境中获取的上下文信息。
+        这里我们计算并更新车辆到交叉口入口的路径距离。
+        """
+        # 使用您 road.py 中已有的接口
+        entry_index = self.road.get_conflict_entry_index(vehicle.move_str)
+
+        if entry_index != -1:
+            # 如果路径经过交叉口
+            entry_pos_longitudinal = vehicle.path_distances[entry_index]
+            current_pos_longitudinal = vehicle.get_current_longitudinal_pos()
+            
+            # 计算并更新剩余距离
+            distance = entry_pos_longitudinal - current_pos_longitudinal
+            vehicle.dist_to_intersection_entry = max(0, distance)
+        else:
+            # 如果路径不经过交叉口
+            vehicle.dist_to_intersection_entry = float('inf')    
+
     def get_traffic_stats(self):
         """获取交通统计信息"""
         stats = {
