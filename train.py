@@ -82,8 +82,8 @@ def parse_args():
     parser.add_argument("--n-envs", type=int, default=45, help="Number of parallel environments to use for training.")
     
     # --- 训练过程参数 ---
-    parser.add_argument("--total-timesteps", type=int, default=200000, help="Total timesteps to train the agent.")
-    parser.add_argument("--save-freq", type=int, default=50000, help="Save a checkpoint every N timesteps.")
+    parser.add_argument("--total-timesteps", type=int, default=6000000, help="Total timesteps to train the agent.")
+    parser.add_argument("--save-freq", type=int, default=1000000, help="Save a checkpoint every N timesteps.")
 
     parser.add_argument("--buffer-size", type=int, default=2048, help="Size of the rollout buffer.")
     parser.add_argument("--update-epochs", type=int, default=2, help="Number of epochs to update the policy per rollout.")
@@ -113,7 +113,7 @@ def main():
     set_seed(args.seed)
     
     run_name = f"{args.algo}_{time.strftime('%Y%m%d-%H%M%S')}"
-    log_dir = f"logs/{run_name}"
+    log_dir = f"/root/tf-logs/{run_name}"
     model_save_dir = f"models/{run_name}"
     os.makedirs(log_dir, exist_ok=True)
     os.makedirs(model_save_dir, exist_ok=True)
@@ -139,7 +139,7 @@ def main():
     # --- 3. [核心改进] 初始化或加载SB3模型 ---
     if args.resume_from:
         print(f"--- Resuming training from {args.resume_from} ---")
-        model = PPO.load(args.resume_from, env=env, tensorboard_log=f"runs/{run_name}")
+        model = PPO.load(args.resume_from, env=env, tensorboard_log=log_dir)
     else:
         print(f"--- Starting a new training run ---")
         model = PPO(
@@ -147,7 +147,7 @@ def main():
             env,
             policy_kwargs=policy_kwargs,
             verbose=1,
-            tensorboard_log=f"runs/{run_name}",
+            tensorboard_log=log_dir,
             # 可以直接在这里设置PPO的超参数
             n_steps=2048,
             batch_size=64,
