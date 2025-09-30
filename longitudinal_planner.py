@@ -47,51 +47,53 @@ class LongitudinalPlanner:
 
     def get_target_speed(self, all_vehicles) -> float:
         """
-        [V4 - Refined Yield]
-        该方法融合了基于规则的路权判断和基于意图的行为调整。
-        YIELD行为被修改为“减速观察”而非“完全停止”。
+        [最终版]
+        该方法实现了分层级的、动态的实时速度决策。
+        1. 最高优先级：处理与RL Agent的交互，由预设的'intent' ('GO'/'YIELD')主导。
+        2. 第二优先级：处理与其他HV的交互，由基于规则的'has_priority_over'主导。
+        3. 默认行为：标准跟驰或自由流。
         """
-        lead_vehicle = self.vehicle.find_leader(all_vehicles)
-        conflicting_rl_agent = self._find_conflicting_rl_agent(all_vehicles)
-        is_in_interaction_zone = self.vehicle.dist_to_intersection_entry < INTERACTION_ZONE_RADIUS
-        
         v_ego = self.vehicle.state['vx']
-        v_lead = None
-        gap = None
         
-        # 定义一个安全的目标让行速度（单位: m/s）
+        # 定义一个安全的、用于“滚动让行”的目标速度（单位: m/s）
         YIELD_TARGET_SPEED = 3.0 
 
-        # --- 核心决策逻辑: 判断是否在交叉口决策区内 ---
-        if conflicting_rl_agent and is_in_interaction_zone and not self.vehicle.is_in_intersection:
-            
-            # 1. 规则判断
-            rule_based_decision_to_yield = not self.vehicle.has_priority_over(conflicting_rl_agent)
+        # --- 1. 最高优先级：与RL Agent的交互 ---
+        conflicting_rl_agent = self._find_conflicting_rl_agent(all_vehicles)
+        is_in_interaction_zone = self.vehicle.dist_to_intersection_entry < INTERACTION_ZONE_RADIUS
 
-            # 2. 意图调整
-            final_decision_to_yield = False
-            if self.intent == 'YIELD':
-                final_decision_to_yield = True
-            elif self.intent == 'GO':
-                final_decision_to_yield = False
+        if conflicting_rl_agent and is_in_interaction_zone:
+            if self.intent == 'GO':
+                # “GO”意图：无视AV，执行自由流。
+                # 此时 v_lead 和 gap 都为 None，IDM只计算自由流项。
+                return self.idm_model.get_target_speed(v_ego, None, None)
 
-            # 3. 执行决策
-            if final_decision_to_yield:
-                # [核心修正]
-                # 执行“减速让行”而非“停车让行”。
-                # 车辆将目标速度调整为YIELD_TARGET_SPEED，以低速接近交叉口等待时机。
-                v_lead = YIELD_TARGET_SPEED
+            elif self.intent == 'YIELD':
+                # “YIELD”意图：将AV视为虚拟前车，并为其设置速度下限。
+                
+                # [核心修正] v_lead 是AV的真实速度和YIELD_TARGET_SPEED中的较大值
+                v_lead = max(conflicting_rl_agent.state['vx'], YIELD_TARGET_SPEED)
+                
                 gap = self.vehicle.dist_to_intersection_entry
-            else: # 决定通行
-                v_lead = None
-                gap = None
+                return self.idm_model.get_target_speed(v_ego, v_lead, gap)
 
-        elif lead_vehicle:
-            # --- 次要逻辑: 标准跟驰 ---
+        # --- 2. 第二优先级：与其他HV的交互 (仅在不与AV交互时触发) ---
+        for other_hv in all_vehicles:
+            if not getattr(other_hv, 'is_rl_agent', False) and other_hv.vehicle_id != self.vehicle.vehicle_id and self.vehicle._does_path_conflict(other_hv):
+                if not self.vehicle.has_priority_over(other_hv):
+                    # 如果需要让行另一辆HV，同样采用“滚动让行”策略
+                    v_lead = max(other_hv.state['vx'], YIELD_TARGET_SPEED)
+                    gap = self.vehicle.dist_to_intersection_entry
+                    return self.idm_model.get_target_speed(v_ego, v_lead, gap)
+
+        # --- 3. 默认行为：标准跟驰或自由流 ---
+        lead_vehicle = self.vehicle.find_leader(all_vehicles)
+        if lead_vehicle:
             v_lead = lead_vehicle.state['vx']
             gap = lead_vehicle.get_current_longitudinal_pos() - self.vehicle.get_current_longitudinal_pos() - lead_vehicle.length
-        
-        return self.idm_model.get_target_speed(v_ego, v_lead, gap)
+            return self.idm_model.get_target_speed(v_ego, v_lead, gap)
+        else:
+            return self.idm_model.get_target_speed(v_ego, None, None)
 
     def _find_conflicting_rl_agent(self, all_vehicles):
             """

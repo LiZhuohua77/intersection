@@ -78,6 +78,7 @@
 import pygame
 import numpy as np
 import time
+import matplotlib.pyplot as plt
 from config import *
 from longitudinal_control import PIDController
 from lateral_control import MPCController
@@ -394,36 +395,35 @@ class Vehicle:
         判断本车(self)是否比另一辆车(other_vehicle)具有更高通行优先级。
         增加决策锁定机制以防止高频振荡。
         """
-        # 检查是否存在决策锁
+        # [调试增强] 打印决策锁的状态
         if other_vehicle.vehicle_id in self.decision_lock:
             lock_info = self.decision_lock[other_vehicle.vehicle_id]
-            # 如果锁未过期（例如，基于时间或车辆已移动距离），则直接返回锁定的决策
-            # 这里用一个简单的计数器作为示例，比如锁定50个仿真步
             if lock_info['steps_left'] > 0:
                 lock_info['steps_left'] -= 1
+                # print(f"[DEBUG] Vehicle {self.vehicle_id}: Lock ACTIVE for {other_vehicle.vehicle_id}. Decision: {lock_info['decision']}. Steps left: {lock_info['steps_left']}")
                 return lock_info['decision']
             else:
-                # 锁过期，移除
+                print(f"[DEBUG] Vehicle {self.vehicle_id}: Lock EXPIRED for {other_vehicle.vehicle_id}.")
                 del self.decision_lock[other_vehicle.vehicle_id]
 
-        # 辅助函数，用于检查、记录打印和设置决策锁
         def log_lock_and_return(decision, rule_id, message):
-            if self.priority_log.get(other_vehicle.vehicle_id) != rule_id:
-                print(message)
-                self.priority_log[other_vehicle.vehicle_id] = rule_id
-                # 当决策发生改变时，设置一个新的决策锁
-                self.decision_lock[other_vehicle.vehicle_id] = {
-                    'decision': decision,
-                    'steps_left': 50  # 锁定决策50个仿真步
-                }
+            # ... (内部逻辑不变) ...
+            # [调试增强] 在设置新锁时打印信息
+            print(f"[DEBUG] Vehicle {self.vehicle_id}: SETTING NEW LOCK for {other_vehicle.vehicle_id}. Decision: {decision}. Rule: {rule_id}")
+            self.decision_lock[other_vehicle.vehicle_id] = {
+                'decision': decision,
+                'steps_left': 100  # [建议修改] 增加锁定时长
+            }
             return decision
 
         # 规则1: Time-based FCFS（先进入冲突区的先通过）
         my_entry_time = self._estimate_entry_time()
         other_entry_time = other_vehicle._estimate_entry_time()
-        
-        # 增加一个小的容差(hysteresis)来防止因浮点数精度问题导致的抖动
         time_diff = my_entry_time - other_entry_time
+
+        # [调试增强] 打印决策的关键输入值
+        print(f"[DEBUG] V:{self.vehicle_id} vs V:{other_vehicle.vehicle_id} | MyTime: {my_entry_time:.2f}, OtherTime: {other_entry_time:.2f}, Diff: {time_diff:.2f}")
+
         if time_diff < -0.1: # 我方明显更快
             return log_lock_and_return(True, "R1_Win", f"Priority: Vehicle {self.vehicle_id} has priority over {other_vehicle.vehicle_id} using Rule 1 (Time-based FCFS)")
         if time_diff > 0.1: # 对方明显更快
@@ -714,6 +714,82 @@ class RLVehicle(Vehicle):
         self.cross_track_error = 0.0
         self.heading_error = 0.0
         self.debug_log = []
+
+    def plot_reward_history(self, save_path_base=None):
+        """
+        [修改后] 绘制智能体在单次回合中的奖励历史。
+        如果提供了 save_path_base，则将图表保存到文件；否则，直接显示。
+        """
+        if not self.debug_log:
+            print("调试日志为空，无法绘制奖励历史。")
+            return
+
+        # --- 1. 从日志中提取数据 ---
+        steps = [log['step'] for log in self.debug_log]
+        
+        # 加权奖励分量
+        rewards = {
+            'Velocity Tracking': [log.get('reward_velocity_tracking', 0) for log in self.debug_log],
+            'Path Following': [log.get('reward_path_following', 0) for log in self.debug_log],
+            'Action Smoothness': [log.get('reward_action_smoothness_penalty', 0) for log in self.debug_log],
+            'Energy Consumption': [log.get('reward_energy_consumption', 0) for log in self.debug_log],
+            'Cost Penalty': [log.get('reward_cost_penalty', 0) for log in self.debug_log],
+            'Total Reward': [log.get('total_reward', 0) for log in self.debug_log],
+        }
+
+        # 未加权的原始指标
+        raw_metrics = {
+            'Speed (m/s)': [log.get('raw_speed', 0) for log in self.debug_log],
+            'CTE (m)': [log.get('raw_cte', 0) for log in self.debug_log],
+            'Heading Error (rad)': [log.get('raw_he', 0) for log in self.debug_log],
+            'Action Smoothness Penalty': [log.get('raw_smoothness_penalty', 0) for log in self.debug_log],
+            'Power (kW)': [log.get('raw_power', 0) for log in self.debug_log],
+            'Cost Potential': [log.get('raw_cost_potential', 0) for log in self.debug_log],
+        }
+
+        # --- 2. 绘制加权奖励图 ---
+        plt.figure(figsize=(15, 10))
+        plt.suptitle(f'Weighted Reward Components for Vehicle {self.vehicle_id}', fontsize=16)
+        
+        num_rewards = len(rewards)
+        for i, (name, data) in enumerate(rewards.items()):
+            ax = plt.subplot(num_rewards, 1, i + 1)
+            ax.plot(steps, data, label=name)
+            ax.set_ylabel(name)
+            ax.grid(True)
+            if i == num_rewards - 1:
+                ax.set_xlabel('Simulation Steps')
+        
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        if save_path_base:
+            save_path = f"{save_path_base}_rewards_weighted.png"
+            plt.savefig(save_path)
+            plt.close()
+            print(f"加权奖励图已保存到: {save_path}")
+        else:
+            plt.show()
+
+        # --- 3. 绘制未加权指标图 ---
+        plt.figure(figsize=(15, 10))
+        plt.suptitle(f'Unweighted Performance Metrics for Vehicle {self.vehicle_id}', fontsize=16)
+
+        num_metrics = len(raw_metrics)
+        for i, (name, data) in enumerate(raw_metrics.items()):
+            ax = plt.subplot(num_metrics, 1, i + 1)
+            ax.plot(steps, data, label=name, color='tab:orange')
+            ax.set_ylabel(name)
+            ax.grid(True)
+            if i == num_metrics - 1:
+                ax.set_xlabel('Simulation Steps')
+
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        if save_path_base:
+            save_path = f"{save_path_base}_metrics_unweighted.png"
+            plt.savefig(save_path)
+            plt.close()
+            print(f"原始指标图已保存到: {save_path}")
+        else:
+            plt.show()
 
     def get_observation(self, all_vehicles):
         """
@@ -1081,20 +1157,25 @@ class RLVehicle(Vehicle):
             'action_steer': action[1],
             
             # 从 reward_info 字典中获取所有奖励分量
-            'reward_progress': reward_info.get('progress', 0),
             'reward_velocity_tracking': reward_info.get('velocity_tracking', 0),
             'reward_path_following': reward_info.get('path_following', 0),
-            'reward_time_penalty': reward_info.get('time_penalty', 0),
             'reward_action_smoothness_penalty': reward_info.get('action_smoothness', 0),
             'reward_cost_penalty': reward_info.get('cost_penalty', 0),
             'reward_energy_consumption': reward_info.get('energy_consumption', 0),
             'total_reward': total_reward, # 记录最终（可能被终局奖励覆盖的）总奖励
             
+            # [核心修正] 完整记录所有用于绘图的未加权原始指标
+            'raw_speed': self.state['vx'],
+            'raw_cte': self.cross_track_error,
+            'raw_he': self.heading_error,
+            'raw_smoothness_penalty': np.sum((action - self.last_action)**2),
+            'raw_power': self._calculate_energy_consumption(action[0] * MAX_ACCELERATION),
             'raw_cost_potential': cost,
+
             'ego_vx': self.state['vx'],
             'ego_vy': self.state['vy'],
-            'cross_track_error': (observation[3] * self.road.lane_width * 2),
-            'heading_error': (observation[4] * np.pi)
+            'cross_track_error': self.cross_track_error, # 直接使用成员变量
+            'heading_error': self.heading_error      # 直接使用成员变量
         }
         self.debug_log.append(log_entry)
 

@@ -212,6 +212,7 @@ def main():
                             
                             # --- [MODIFIED] 绘制、保存并关闭绘图，防止内存泄漏 ---
                             plot_filename_base = f"ep_{total_episode_counter}_{driver_key}_{outcome}"
+                            plot_base_path = os.path.join(log_save_dir, plot_filename_base)
                             
                             # 图1: RL Agent 的速度曲线
                             if hasattr(env, 'rl_agent') and env.rl_agent:
@@ -231,6 +232,8 @@ def main():
                                     plt.savefig(rl_plot_path)
                                     plt.close() # <-- 关键：关闭图形以释放内存
                                     print(f"RL Agent 速度图已保存到: {rl_plot_path}")
+                                    
+                                env.rl_agent.plot_reward_history(save_path_base=plot_base_path)
 
                             # 图2: 背景车辆的速度曲线
                             all_npc_data = []
