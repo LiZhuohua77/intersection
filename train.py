@@ -55,6 +55,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.logger import configure
 
 # --- 动态导入算法 ---
 from sagi_ppo import SAGIPPOAgent, RolloutBuffer as SAGIRolloutBuffer
@@ -111,9 +112,8 @@ def main():
     set_seed(args.seed)
     
     run_name = f"{args.algo}_{time.strftime('%Y%m%d-%H%M%S')}"
-    log_dir = f"/root/tf-logs/{run_name}"
+    tb_log_root_dir = "/root/tf-logs/"
     model_save_dir = f"models/{run_name}"
-    os.makedirs(log_dir, exist_ok=True)
     os.makedirs(model_save_dir, exist_ok=True)
 
     # --- 1. [核心改进] 创建并行化的 Gym 环境 ---
@@ -150,7 +150,11 @@ def main():
     if args.algo.startswith("ppo"):
         if args.resume_from:
             print(f"--- Resuming {args.algo.upper()} training from {args.resume_from} ---")
-            model = PPO.load(args.resume_from, env=env, tensorboard_log=log_dir_parent)
+            model = PPO.load(args.resume_from, env=env)
+            # [CHANGED] 为加载的模型设置新的日志记录器，指向服务器路径
+            # 日志会被保存在 /root/tf-logs/<run_name>_resume/ 目录下
+            resume_run_name = f"{run_name}_resume"
+            model.set_logger(configure(os.path.join(tb_log_root_dir, resume_run_name), ["stdout", "csv", "tensorboard"]))
         else:
             print(f"--- Starting a new {args.algo.upper()} training run ---")
         model = PPO(
@@ -165,7 +169,8 @@ def main():
             gamma=args.gamma,
             gae_lambda=args.gae_lambda,
             clip_range=args.clip_range,
-            seed=args.seed
+            seed=args.seed,
+            tensorboard_log=tb_log_root_dir
         )
     elif args.algo == "sagi_ppo":
         # ... (SAGI-PPO的初始化逻辑不变) ...
@@ -176,8 +181,8 @@ def main():
     # --- 4. [核心改进] 使用SB3的回调函数来保存检查点 ---
     checkpoint_callback = CheckpointCallback(
         save_freq=max(args.save_freq // args.n_envs, 1),
-        save_path=os.path.join(model_save_dir, "checkpoints"),
-        name_prefix="ppo_model"
+        save_path=os.path.join(model_save_dir, "model_checkpoints"),
+        name_prefix=f"{args.algo}_checkpoint"
     )
 
     # --- 5. [核心改进] 开始训练 ---
@@ -186,7 +191,8 @@ def main():
     model.learn(
         total_timesteps=args.total_timesteps,
         callback=checkpoint_callback,
-        reset_num_timesteps=(not args.resume_from) # 如果是新训练，则重置时间步计数
+        tb_log_name=run_name,
+        reset_num_timesteps=(not args.resume_from)
     )
 
     # --- 6. [核心改进] 保存最终模型 ---
