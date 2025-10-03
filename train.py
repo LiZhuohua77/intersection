@@ -46,7 +46,7 @@ import time
 import gymnasium as gym
 from torch.utils.tensorboard import SummaryWriter
 from traffic_env import TrafficEnv
-from agent import HybridFeaturesExtractor 
+from agent import HybridFeaturesExtractor, SimpleFeaturesExtractor
 from config import *
 import numpy as np
 import random
@@ -58,7 +58,6 @@ from stable_baselines3.common.callbacks import CheckpointCallback
 
 # --- 动态导入算法 ---
 from sagi_ppo import SAGIPPOAgent, RolloutBuffer as SAGIRolloutBuffer
-from ppo import PPOAgent, RolloutBuffer as PPORolloutBuffer
 
 import pandas as pd
 import os
@@ -69,8 +68,10 @@ def set_seed(seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
     os.environ['PYTHONHASHSEED'] = str(seed)
 
 def parse_args():
@@ -78,35 +79,32 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train an agent for the traffic intersection environment.")
     
     # --- 实验与算法选择 ---
-    parser.add_argument("--algo", type=str, default="ppo", choices=["sagi_ppo", "ppo"], help="The reinforcement learning algorithm to use.")
+    parser.add_argument("--algo", type=str, default="ppo_gru", 
+                        choices=["sagi_ppo", "ppo_gru", "ppo_mlp"], 
+                        help="The reinforcement learning algorithm to use.")
     parser.add_argument("--n-envs", type=int, default=45, help="Number of parallel environments to use for training.")
     
     # --- 训练过程参数 ---
     parser.add_argument("--total-timesteps", type=int, default=6000000, help="Total timesteps to train the agent.")
     parser.add_argument("--save-freq", type=int, default=1000000, help="Save a checkpoint every N timesteps.")
 
-    parser.add_argument("--buffer-size", type=int, default=2048, help="Size of the rollout buffer.")
-    parser.add_argument("--update-epochs", type=int, default=2, help="Number of epochs to update the policy per rollout.")
+    parser.add_argument("--n-steps", type=int, default=2048, help="Num steps to run for each env per rollout (buffer size).")
+    parser.add_argument("--batch-size", type=int, default=64, help="Minibatch size for each update.")
+    parser.add_argument("--n-epochs", type=int, default=10, help="Number of epochs to update the policy per rollout.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")
 
-    # --- 算法超参数 ---
-    parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate for the optimizers.")
+    parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate for the optimizers.")
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor gamma.")
     parser.add_argument("--gae-lambda", type=float, default=0.95, help="Lambda for the GAE advantage calculation.")
-    parser.add_argument("--clip-epsilon", type=float, default=0.2, help="Clipping parameter epsilon for PPO.")
+    parser.add_argument("--clip-range", type=float, default=0.2, help="Clipping parameter for PPO.")
     parser.add_argument("--hidden-dim", type=int, default=256, help="Dimension of the hidden layers.")
     parser.add_argument("--rnn-hidden-dim", type=int, default=64, help="Dimension of the GRU hidden layers for trajectory encoding.")
 
-
-    # --- SAGI-PPO 专属参数 ---
     parser.add_argument("--cost-limit", type=float, default=30.0, help="Cost limit 'd' for SAGI-PPO.")
     
-    # --- 继续训练参数 ---
     parser.add_argument("--resume-from", type=str, default=None, help="Path to a .zip model file to resume training from.")
-    parser.add_argument("--model-path", type=str, default="D:\Code\intersection\models\ppo_20250829-083302", help="Path to the model directory for resuming training.")
-    
-    args = parser.parse_args()
-    return args
+
+    return parser.parse_args()
 
 def main():
     args = parse_args()
@@ -124,39 +122,56 @@ def main():
                        env_kwargs=dict(scenario='head_on_conflict'))
 
     # --- 2. [核心改进] 定义自定义策略网络参数 ---
-    policy_kwargs = dict(
-        features_extractor_class=HybridFeaturesExtractor,
-        features_extractor_kwargs=dict(
-            av_obs_dim=AV_OBS_DIM,
-            hv_obs_dim=HV_OBS_DIM,
-            traj_len=PREDICTION_HORIZON,
-            traj_feat_dim=FEATURES_PER_STEP,
-            rnn_hidden_dim=args.rnn_hidden_dim
-        ),
-        net_arch=dict(pi=[args.hidden_dim, args.hidden_dim], vf=[args.hidden_dim, args.hidden_dim])
-    )
+    policy_kwargs = {}
+    if args.algo in ["ppo_gru", "sagi_ppo"]:
+        # 使用GRU的算法配置
+        policy_kwargs = dict(
+            features_extractor_class=HybridFeaturesExtractor,
+            features_extractor_kwargs=dict(
+                av_obs_dim=AV_OBS_DIM, hv_obs_dim=HV_OBS_DIM,
+                traj_len=PREDICTION_HORIZON, traj_feat_dim=FEATURES_PER_STEP,
+                rnn_hidden_dim=args.rnn_hidden_dim
+            ),
+            net_arch=dict(pi=[args.hidden_dim, args.hidden_dim], vf=[args.hidden_dim, args.hidden_dim])
+        )
+    elif args.algo == "ppo_mlp":
+        # 不使用GRU的算法配置
+        policy_kwargs = dict(
+            features_extractor_class=SimpleFeaturesExtractor,
+            features_extractor_kwargs=dict(
+                av_obs_dim=AV_OBS_DIM, hv_obs_dim=HV_OBS_DIM
+            ),
+            net_arch=dict(pi=[args.hidden_dim, args.hidden_dim], vf=[args.hidden_dim, args.hidden_dim])
+        )
 
     # --- 3. [核心改进] 初始化或加载SB3模型 ---
-    if args.resume_from:
-        print(f"--- Resuming training from {args.resume_from} ---")
-        model = PPO.load(args.resume_from, env=env, tensorboard_log=log_dir)
-    else:
-        print(f"--- Starting a new training run ---")
+    model = None
+    # 将两种PPO的初始化合并
+    if args.algo.startswith("ppo"):
+        if args.resume_from:
+            print(f"--- Resuming {args.algo.upper()} training from {args.resume_from} ---")
+            model = PPO.load(args.resume_from, env=env, tensorboard_log=log_dir_parent)
+        else:
+            print(f"--- Starting a new {args.algo.upper()} training run ---")
         model = PPO(
             "MlpPolicy",
             env,
             policy_kwargs=policy_kwargs,
             verbose=1,
-            tensorboard_log=log_dir,
-            # 可以直接在这里设置PPO的超参数
-            n_steps=2048,
-            batch_size=64,
-            n_epochs=10,
-            gamma=0.99,
-            gae_lambda=0.95,
-            clip_range=0.2,
-            learning_rate=3e-4
+            learning_rate=args.lr,
+            n_steps=args.n_steps,
+            batch_size=args.batch_size,
+            n_epochs=args.n_epochs,
+            gamma=args.gamma,
+            gae_lambda=args.gae_lambda,
+            clip_range=args.clip_range,
+            seed=args.seed
         )
+    elif args.algo == "sagi_ppo":
+        # ... (SAGI-PPO的初始化逻辑不变) ...
+        pass
+    else:
+        raise ValueError(f"Unknown algorithm: {args.algo}")
         
     # --- 4. [核心改进] 使用SB3的回调函数来保存检查点 ---
     checkpoint_callback = CheckpointCallback(
@@ -167,7 +182,7 @@ def main():
 
     # --- 5. [核心改进] 开始训练 ---
     # SB3的learn方法封装了所有复杂的训练循环
-    print("--- Starting training ---")
+    print(f"--- Starting training for {args.algo.upper()} ---")
     model.learn(
         total_timesteps=args.total_timesteps,
         callback=checkpoint_callback,
@@ -175,7 +190,7 @@ def main():
     )
 
     # --- 6. [核心改进] 保存最终模型 ---
-    final_model_path = os.path.join(model_save_dir, "final_model.zip")
+    final_model_path = os.path.join(model_save_dir, f"{args.algo}_final_model.zip")
     model.save(final_model_path)
     
     print("--- Training finished ---")

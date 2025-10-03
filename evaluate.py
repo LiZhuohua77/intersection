@@ -71,7 +71,8 @@ def parse_args():
         --seed: 随机种子，用于确保实验可重复性
     """
     parser = argparse.ArgumentParser(description="Evaluate a trained PPO/SAGI-PPO agent against different driver types.")
-    parser.add_argument("--algo", type=str, default="ppo", choices=["sagi_ppo", "ppo"],
+    parser.add_argument("--algo", type=str, default="ppo_gru",
+                        choices=["sagi_ppo", "ppo_gru", "ppo_mlp"], 
                         help="The algorithm of the trained agent to evaluate.")
     parser.add_argument("--model_path", type=str, default="D:/Code/intersection/models/final_model.zip",
                         help="Path to the saved model .zip file (e.g., 'models/final_model.zip').")
@@ -109,9 +110,15 @@ def main():
     
     game_engine = GameEngine(width=800, height=800)
 
-    print(f"--- Loading Stable Baselines3 PPO Agent from {args.model_path} ---")
+    model = None
+    print(f"--- Loading {args.algo.upper()} Agent from {args.model_path} ---")
     try:
-        model = PPO.load(args.model_path, env=env)
+        if args.algo.startswith("ppo"):
+            model = PPO.load(args.model_path, env=env)
+        elif args.algo == "sagi_ppo":
+            pass
+        else:
+            raise ValueError(f"Unknown algorithm for loading: {args.algo}")
     except Exception as e:
         print(f"Error loading model: {e}")
         print("请确保您提供的路径是一个由Stable Baselines3保存的.zip模型文件，")
