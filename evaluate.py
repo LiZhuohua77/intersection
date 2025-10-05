@@ -37,6 +37,7 @@ from config import *
 from stable_baselines3 import PPO
 from game_engine import GameEngine
 from traffic_env import TrafficEnv
+from sagi_ppo import SAGIPPO
 
 
 
@@ -72,7 +73,7 @@ def parse_args():
     """
     parser = argparse.ArgumentParser(description="Evaluate a trained PPO/SAGI-PPO agent against different driver types.")
     parser.add_argument("--algo", type=str, default="ppo_gru",
-                        choices=["sagi_ppo", "ppo_gru", "ppo_mlp"], 
+                        choices=["sagi_ppo_mlp", "sagi_ppo_gru", "ppo_gru", "ppo_mlp"], 
                         help="The algorithm of the trained agent to evaluate.")
     parser.add_argument("--model_path", type=str, default="D:/Code/intersection/models/ppo_gru_final_model.zip",
                         help="Path to the saved model .zip file (e.g., 'models/final_model.zip').")
@@ -115,8 +116,8 @@ def main():
     try:
         if args.algo.startswith("ppo"):
             model = PPO.load(args.model_path, env=env)
-        elif args.algo == "sagi_ppo":
-            pass
+        elif args.algo.startswith("sagi_ppo"):
+            model = SAGIPPO.load(args.model_path, env=env)
         else:
             raise ValueError(f"Unknown algorithm for loading: {args.algo}")
     except Exception as e:

@@ -58,7 +58,7 @@ from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.logger import configure
 
 # --- 动态导入算法 ---
-from sagi_ppo import SAGIPPOAgent, RolloutBuffer as SAGIRolloutBuffer
+from sagi_ppo import SAGIPPO
 
 import pandas as pd
 import os
@@ -81,7 +81,7 @@ def parse_args():
     
     # --- 实验与算法选择 ---
     parser.add_argument("--algo", type=str, default="ppo_gru", 
-                        choices=["sagi_ppo", "ppo_gru", "ppo_mlp"], 
+                        choices=["sagi_ppo_mlp", "sagi_ppo_gru", "ppo_gru", "ppo_mlp"], 
                         help="The reinforcement learning algorithm to use.")
     parser.add_argument("--n-envs", type=int, default=45, help="Number of parallel environments to use for training.")
     
@@ -102,7 +102,9 @@ def parse_args():
     parser.add_argument("--rnn-hidden-dim", type=int, default=64, help="Dimension of the GRU hidden layers for trajectory encoding.")
 
     parser.add_argument("--cost-limit", type=float, default=30.0, help="Cost limit 'd' for SAGI-PPO.")
-    
+    parser.add_argument("--lambda-lr", type=float, default=0.035, help="Learning rate for the Lagrange multiplier lambda.")
+    parser.add_argument("--cost-vf-coef", type=float, default=0.5, help="Coefficient for the cost value function loss.")
+        
     parser.add_argument("--resume-from", type=str, default=None, help="Path to a .zip model file to resume training from.")
 
     return parser.parse_args()
@@ -123,7 +125,13 @@ def main():
 
     # --- 2. [核心改进] 定义自定义策略网络参数 ---
     policy_kwargs = {}
-    if args.algo in ["ppo_gru", "sagi_ppo"]:
+    net_arch = dict(pi=[args.hidden_dim, args.hidden_dim], vf=[args.hidden_dim, args.hidden_dim])
+
+    # 如果是SAGI算法，需要额外定义成本价值网络结构
+    if args.algo.startswith("sagi_ppo"):
+        net_arch['cost_vf'] = [args.hidden_dim, args.hidden_dim]
+
+    if args.algo.endswith("_gru"):
         # 使用GRU的算法配置
         policy_kwargs = dict(
             features_extractor_class=HybridFeaturesExtractor,
@@ -132,16 +140,16 @@ def main():
                 traj_len=PREDICTION_HORIZON, traj_feat_dim=FEATURES_PER_STEP,
                 rnn_hidden_dim=args.rnn_hidden_dim
             ),
-            net_arch=dict(pi=[args.hidden_dim, args.hidden_dim], vf=[args.hidden_dim, args.hidden_dim])
+            net_arch=net_arch
         )
-    elif args.algo == "ppo_mlp":
+    elif args.algo.endswith("_mlp"):
         # 不使用GRU的算法配置
         policy_kwargs = dict(
             features_extractor_class=SimpleFeaturesExtractor,
             features_extractor_kwargs=dict(
                 av_obs_dim=AV_OBS_DIM, hv_obs_dim=HV_OBS_DIM
             ),
-            net_arch=dict(pi=[args.hidden_dim, args.hidden_dim], vf=[args.hidden_dim, args.hidden_dim])
+            net_arch=net_arch
         )
 
     # --- 3. [核心改进] 初始化或加载SB3模型 ---
@@ -172,8 +180,35 @@ def main():
             seed=args.seed,
             tensorboard_log=tb_log_root_dir
         )
-    elif args.algo == "sagi_ppo":
-        # ... (SAGI-PPO的初始化逻辑不变) ...
+    elif args.algo.startswith("sagi_ppo"):
+        if args.resume_from:
+            # 加载模型，SB3会自动处理好自定义类的恢复
+            model = SAGIPPO.load(args.resume_from, env=env)
+            # 修改这一行，与PPO保持一致的日志结构
+            resume_run_name = f"{run_name}_resume"
+            model.set_logger(configure(os.path.join(tb_log_root_dir, resume_run_name), ["stdout", "csv", "tensorboard"]))
+        else:
+            # 创建新模型，确保使用正确的tensorboard_log路径
+            model = SAGIPPO(
+                "MlpPolicy", 
+                env,
+                policy_kwargs=policy_kwargs,
+                # SAGI-PPO 专属参数
+                cost_limit=args.cost_limit,
+                lambda_lr=args.lambda_lr,
+                cost_vf_coef=args.cost_vf_coef,
+                # 标准 PPO 参数
+                learning_rate=args.lr,
+                n_steps=args.n_steps,
+                batch_size=args.batch_size,
+                n_epochs=args.n_epochs,
+                gamma=args.gamma,
+                gae_lambda=args.gae_lambda,
+                clip_range=args.clip_range,
+                seed=args.seed,
+                tensorboard_log=tb_log_root_dir,
+                verbose=1
+            )
         pass
     else:
         raise ValueError(f"Unknown algorithm: {args.algo}")

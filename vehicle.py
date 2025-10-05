@@ -349,21 +349,37 @@ class Vehicle:
         return self.path_distances[current_path_index]
 
 
-    def _update_visual_feedback(self, plan_info: dict): # [修改] 接收字典
+    def _update_visual_feedback(self, plan_info: dict):
+        """
+        [最终更新版] 根据规划器返回的详细决策原因来更新车辆颜色。
+        """
         if not hasattr(self, 'planner') or self.planner is None:
-            self.color = (200, 200, 200)
+            self.color = (200, 200, 200)  # 灰色: 无规划器
             return
 
-        reason = plan_info.get('reason', 'UNKNOWN') # 获取决策原因
+        reason = plan_info.get('reason', 'UNKNOWN')
+
+        # 规则1: 只要在交叉口物理冲突区内，就优先显示为绿色
+        if self.is_in_intersection:
+            self.color = (0, 255, 100)  # 亮绿: 正在穿越交叉口
+            return
+
+        # 规则2: 根据具体的决策原因设置颜色
+        if reason in ["VIRTUAL_FOLLOW", "YIELD_FORCED", "YIELD_HV"]:
+            # 所有“让行”相关的决策都显示为橙色
+            self.color = (255, 165, 0)  # 橙色: 正在减速让行
         
-        if reason == "VIRTUAL_FOLLOW":
-            self.color = (255, 165, 0)  # 橙色: 正在虚拟跟车让行
         elif reason == "INTENT_GO":
-            self.color = (128, 0, 128)   # 紫色: 正在意图抢行
-        elif self.is_in_intersection:
-            self.color = (0, 255, 100)  # 亮绿: 正在通过交叉口
-        else:
-            self.color = (200, 200, 200)  # 默认: 正常行驶 (包括标准跟驰和自由行驶)
+            # 坚决执行“抢行”意图
+            self.color = (220, 20, 60)   # 深红/品红: 正在意图抢行
+            
+        elif reason == "GO_OVERRIDE":
+            # 本来想让行，但判断安全后决定正常通行
+            self.color = (138, 43, 226)  # 紫罗兰色: 确认安全后通行
+            
+        else: # reason in ["CAR_FOLLOW", "FREE_FLOW", "DEFAULT", "UNKNOWN"]
+            # 其他所有默认情况
+            self.color = (200, 200, 200)  # 灰色: 正常行驶
 
     def _check_completion(self):
         """检查是否到达路径终点"""

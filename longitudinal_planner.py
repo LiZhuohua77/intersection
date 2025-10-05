@@ -47,40 +47,52 @@ class LongitudinalPlanner:
 
     def get_target_speed(self, all_vehicles) -> dict:
         """
-        [最终版]
-        该方法实现了分层级的、动态的实时速度决策。
-        1. 最高优先级：处理与RL Agent的交互，由预设的'intent' ('GO'/'YIELD')主导。
-        2. 第二优先级：处理与其他HV的交互，由基于规则的'has_priority_over'主导。
-        3. 默认行为：标准跟驰或自由流。
-        """    
-           
+        [重构版]
+        实现基于“虚拟壁障”的让行逻辑。
+
+        决策优先级:
+        1.  最高优先级: 处理与RL Agent的交互。如果意图为YIELD，则将交叉口冲突点
+            视为一个速度为0的静止障碍物进行跟驰。
+        2.  第二优先级: 处理与其他HV的交互。
+        3.  默认行为: 标准的车辆跟驰或自由流。
+        """
         v_ego = self.vehicle.state['vx']
         
-        # 定义一个安全的、用于“滚动让行”的目标速度（单位: m/s）
-        YIELD_TARGET_SPEED = 3.0 
-
-        # --- 1. 最高优先级：与RL Agent的交互 ---
+        # --- 1. 最高优先级：与 RL Agent 的交互 ---
         conflicting_rl_agent = self._find_conflicting_rl_agent(all_vehicles)
-        is_in_interaction_zone = self.vehicle.dist_to_intersection_entry < INTERACTION_ZONE_RADIUS
+        
+        # 从Road对象读取决策区的半径 (例如 76米)
+        decision_radius = self.vehicle.road.extended_conflict_zone_radius
+        is_in_decision_zone = self.vehicle.dist_to_intersection_entry < decision_radius
 
-        if conflicting_rl_agent and is_in_interaction_zone:
+        if conflicting_rl_agent and is_in_decision_zone:
+            
             if self.intent == 'GO':
+                # 意图是“抢行”，则执行自由流，无视AV
                 target_speed = self.idm_model.get_target_speed(v_ego, None, None)
                 return {'speed': target_speed, 'reason': 'INTENT_GO'}
 
             elif self.intent == 'YIELD':
-                v_lead = max(conflicting_rl_agent.state['vx'], YIELD_TARGET_SPEED)
+                # [核心修改] “虚拟壁障”逻辑
+                # 将交叉口冲突点视为一个速度为0的静止前车
+                v_lead = 0.0 
+                # 与这个“虚拟前车”的距离就是到交叉口入口的距离
                 gap = self.vehicle.dist_to_intersection_entry
+                
                 target_speed = self.idm_model.get_target_speed(v_ego, v_lead, gap)
-                return {'speed': target_speed, 'reason': 'VIRTUAL_FOLLOW'} # [修改] 返回字典
+                return {'speed': target_speed, 'reason': 'YIELD_VIRTUAL_WALL'}
 
-
-        # --- 2. 第二优先级：与其他HV的交互 (仅在不与AV交互时触发) ---
+        # --- 2. 第二优先级：与其他HV的交互 ---
+        # (这部分逻辑可以保持不变，或者也简化为虚拟壁障模型)
+        # 为保持一致性，我们同样将其简化
         for other_hv in all_vehicles:
-            if not getattr(other_hv, 'is_rl_agent', False) and other_hv.vehicle_id != self.vehicle.vehicle_id and self.vehicle._does_path_conflict(other_hv):
+            if (not getattr(other_hv, 'is_rl_agent', False) and
+                    other_hv.vehicle_id != self.vehicle.vehicle_id and
+                    self.vehicle._does_path_conflict(other_hv)):
+                
                 if not self.vehicle.has_priority_over(other_hv):
-                    # 如果需要让行另一辆HV，同样采用“滚动让行”策略
-                    v_lead = max(other_hv.state['vx'], YIELD_TARGET_SPEED)
+                    # 需要让行另一辆HV，同样视为前方有静止障碍物
+                    v_lead = 0.0
                     gap = self.vehicle.dist_to_intersection_entry
                     target_speed = self.idm_model.get_target_speed(v_ego, v_lead, gap)
                     return {'speed': target_speed, 'reason': 'YIELD_HV'}
@@ -89,12 +101,15 @@ class LongitudinalPlanner:
         lead_vehicle = self.vehicle.find_leader(all_vehicles)
         if lead_vehicle:
             v_lead = lead_vehicle.state['vx']
-            gap = lead_vehicle.get_current_longitudinal_pos() - self.vehicle.get_current_longitudinal_pos() - lead_vehicle.length
+            gap = (lead_vehicle.get_current_longitudinal_pos() - 
+                self.vehicle.get_current_longitudinal_pos() - 
+                lead_vehicle.length)
             target_speed = self.idm_model.get_target_speed(v_ego, v_lead, gap)
-            return {'speed': target_speed, 'reason': 'FOLLOW_LEAD'}
+            return {'speed': target_speed, 'reason': 'CAR_FOLLOW'}
         else:
             target_speed = self.idm_model.get_target_speed(v_ego, None, None)
             return {'speed': target_speed, 'reason': 'FREE_FLOW'}
+
 
     def _find_conflicting_rl_agent(self, all_vehicles):
             """
