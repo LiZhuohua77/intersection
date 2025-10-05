@@ -5,11 +5,16 @@ import numpy as np
 import torch
 from gymnasium import spaces
 from torch.nn import functional as F
+import torch.nn as nn
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.buffers import RolloutBuffer
+from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.utils import explained_variance, get_schedule_fn, obs_as_tensor
+from stable_baselines3.common.torch_layers import create_mlp
+from stable_baselines3.common.vec_env import VecEnv
+
 
 
 class ActorCriticCostPolicy(ActorCriticPolicy):
@@ -18,18 +23,20 @@ class ActorCriticCostPolicy(ActorCriticPolicy):
     """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        cost_vf_arch = self.net_arch.pop('cost_vf', [])
-        self.cost_value_net = self.make_vf(cost_vf_arch)
-
-    def forward(self, obs: torch.Tensor, deterministic: bool = False):
-        latent_pi, latent_vf, latent_sde = self._get_latent(obs)
-        distribution = self._get_action_dist_from_latent(latent_pi, latent_sde=latent_sde)
-        actions = distribution.get_actions(deterministic=deterministic)
-        log_prob = distribution.log_prob(actions)
-        values = self.value_net(latent_vf)
-        cost_values = self.cost_value_net(latent_vf)
-        return actions, values, cost_values, log_prob
         
+        cost_vf_arch = self.net_arch.pop('cost_vf', [])
+        
+        if cost_vf_arch:
+            # [FIXED] 使用 nn.Sequential 将 create_mlp 返回的层列表组装成一个可调用的网络模块
+            self.cost_value_net = nn.Sequential(*create_mlp(
+                self.mlp_extractor.latent_dim_vf,
+                1,
+                net_arch=cost_vf_arch,
+                activation_fn=self.activation_fn
+            ))
+        else:
+            self.cost_value_net = nn.Identity()
+
     def evaluate_actions(self, obs: torch.Tensor, actions: torch.Tensor):
         latent_pi, latent_vf, latent_sde = self._get_latent(obs)
         distribution = self._get_action_dist_from_latent(latent_pi, latent_sde)
@@ -114,15 +121,73 @@ class SAGIPPO(PPO):
         self.cost_vf_coef = cost_vf_coef
         self.lambda_ = 0.0
         
-        super().__init__(policy=policy, env=env, **kwargs)
-        self._setup_custom_components()
+        super().__init__(
+            policy=policy,
+            env=env,
+            rollout_buffer_class=SAGIRolloutBuffer,
+            **kwargs
+        )
 
-    def _setup_custom_components(self) -> None:
-        self.policy_class = ActorCriticCostPolicy
-        self.rollout_buffer_class = SAGIRolloutBuffer
-        super()._setup_model()
-        # 确保使用的是我们自定义的Buffer
         assert isinstance(self.rollout_buffer, SAGIRolloutBuffer), "SAGIPPO must use SAGIRolloutBuffer"
+
+
+    def collect_rollouts(
+        self, env: VecEnv, callback: BaseCallback, rollout_buffer: SAGIRolloutBuffer, n_rollout_steps: int
+    ) -> bool:
+        """
+        [FIXED] 重写数据收集过程，以正确获取 cost 和 cost_value。
+        """
+        assert self._last_obs is not None, "No previous observation was provided"
+        self.policy.set_training_mode(False)
+        n_steps = 0
+        rollout_buffer.reset()
+        callback.on_rollout_start()
+
+        while n_steps < n_rollout_steps:
+            with torch.no_grad():
+                obs_tensor = obs_as_tensor(self._last_obs, self.device)
+                
+                # 手动执行前向传播以获取所有需要的值
+                features = self.policy.extract_features(obs_tensor)
+                latent_pi, latent_vf = self.policy.mlp_extractor(features)
+                distribution = self.policy._get_action_dist_from_latent(latent_pi)
+                actions = distribution.get_actions(deterministic=False)
+                log_probs = distribution.log_prob(actions)
+                values = self.policy.value_net(latent_vf)
+                cost_values = self.policy.cost_value_net(latent_vf)
+
+            actions = actions.cpu().numpy()
+            clipped_actions = actions
+            if isinstance(self.action_space, spaces.Box):
+                clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
+
+            new_obs, rewards, dones, infos = env.step(clipped_actions)
+            costs = np.array([info.get("cost", 0) for info in infos])
+            self.num_timesteps += env.num_envs
+
+            if callback.on_step() is False:
+                return False
+
+            self._update_info_buffer(infos, dones)
+            n_steps += 1
+            if isinstance(self.action_space, spaces.Discrete):
+                actions = actions.reshape(-1, 1)
+
+            rollout_buffer.add(
+                obs=self._last_obs, action=actions, reward=rewards, cost=costs,
+                episode_start=self._last_episode_starts, value=values, cost_value=cost_values, log_prob=log_probs
+            )
+            self._last_obs = new_obs
+            self._last_episode_starts = dones
+
+        with torch.no_grad():
+            last_obs_tensor = obs_as_tensor(new_obs, self.device)
+            _, last_values, last_cost_values, _ = self.policy(last_obs_tensor)
+
+        rollout_buffer.compute_returns_and_advantage(last_values, last_cost_values, dones)
+        callback.on_rollout_end()
+        return True
+
 
     def train(self) -> None:
         self.policy.set_training_mode(True)
