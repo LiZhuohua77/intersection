@@ -283,7 +283,8 @@ class Vehicle:
             return
 
         # 1. 规划 (Planning): 实时计算当前的目标速度
-        target_speed = self.planner.get_target_speed(all_vehicles)
+        plan_info = self.planner.get_target_speed(all_vehicles)
+        target_speed = plan_info['speed']
 
         # 2. 控制 (Control): 计算纵向力和转向角
         throttle_brake = self.pid_controller.step(target_speed, self.state['vx'], dt)
@@ -301,7 +302,7 @@ class Vehicle:
         self.speed_history.append(self.get_current_speed())
         self._update_intersection_status()
         self._check_completion()
-        self._update_visual_feedback(target_speed)
+        self._update_visual_feedback(plan_info)
 
     def get_local_observation(self) -> np.ndarray:
         """
@@ -348,25 +349,21 @@ class Vehicle:
         return self.path_distances[current_path_index]
 
 
-    def _update_visual_feedback(self, target_speed):
-        """
-        [修正后] 根据当前决策更新车辆颜色，用于调试。
-        """
-        # [修改] 使用车辆自身的期望速度 self.planner.idm_model.v0 替代全局的 GIPPS_V_DESIRED
-        # 确保planner已经初始化
+    def _update_visual_feedback(self, plan_info: dict): # [修改] 接收字典
         if not hasattr(self, 'planner') or self.planner is None:
-            self.color = (200, 200, 200) # 如果没有规划器，则为默认颜色
+            self.color = (200, 200, 200)
             return
 
-        vehicle_desired_speed = self.planner.idm_model.v0
+        reason = plan_info.get('reason', 'UNKNOWN') # 获取决策原因
         
-        # 如果目标速度远小于当前速度，并且也远小于其自身的期望速度，意味着正在减速让行
-        if target_speed < self.state['vx'] - 0.5 and target_speed < vehicle_desired_speed - 1.0:
-            self.color = (255, 165, 0)  # 橙色: 正在减速让行
+        if reason == "VIRTUAL_FOLLOW":
+            self.color = (255, 165, 0)  # 橙色: 正在虚拟跟车让行
+        elif reason == "INTENT_GO":
+            self.color = (128, 0, 128)   # 紫色: 正在意图抢行
         elif self.is_in_intersection:
             self.color = (0, 255, 100)  # 亮绿: 正在通过交叉口
         else:
-            self.color = (200, 200, 200)  # 默认: 正常行驶
+            self.color = (200, 200, 200)  # 默认: 正常行驶 (包括标准跟驰和自由行驶)
 
     def _check_completion(self):
         """检查是否到达路径终点"""
@@ -387,8 +384,13 @@ class Vehicle:
         return 'left'
 
     def _does_path_conflict(self, other_vehicle):
-        """通过查询Road对象中的冲突矩阵来高效判断路径是否冲突"""
-        return self.road.do_paths_conflict(self.move_str, other_vehicle.move_str)
+        my_route = self.move_str
+        other_route = other_vehicle.move_str
+
+        is_conflict = self.road.do_paths_conflict(my_route, other_route)
+        #print(f"DEBUG CONFLICT CHECK: Is there a conflict between {my_route} (me, #{self.vehicle_id}) and {other_route} (#{other_vehicle.vehicle_id})? -> {is_conflict}")
+
+        return is_conflict
 
     def has_priority_over(self, other_vehicle):
         """
@@ -1137,7 +1139,7 @@ class RLVehicle(Vehicle):
         truncated = self.steps_since_spawn >= self.max_episode_steps
 
         # 3. 计算奖励和新的观测值
-        is_baseline = (algo_name == "ppo")
+        is_baseline = (algo_name == "ppo_gru")
         reward_info = self.calculate_reward(action, is_collision, is_baseline_agent=is_baseline)
         total_reward = reward_info['total_reward'] # 直接从字典获取最终奖励
 

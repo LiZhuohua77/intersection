@@ -68,7 +68,7 @@ class Road:
         self.left_turn_radius = lane_width * 2.5  # 左转半径较大
         self.right_turn_radius = lane_width * 1.5  # 右转半径较小
 
-        self.conflict_zone_radius = 2 * self.lane_width
+        self.conflict_zone_radius = 4 * self.lane_width
         self.conflict_zone = {
             'center': (self.center_x, self.center_y),
             'radius': self.conflict_zone_radius

@@ -98,7 +98,7 @@ class TrafficEnv(gym.Env):
 
             # --- 步骤2: 正确解析 scenario ---
             scenario = options.get("scenario", self.default_scenario) if options else self.default_scenario
-            
+            self.current_algo = options.get("algo", "sagi_ppo") if options else "sagi_ppo"
             self.traffic_manager.vehicle_id_counter = 1
             
             # --- 步骤3: 设置场景并生成车辆 ---
@@ -154,7 +154,7 @@ class TrafficEnv(gym.Env):
             
         # 1. 将所有工作交给 RL Agent 的 step 方法
         observation, reward, terminated, truncated, info = self.rl_agent.step(
-            action, self.dt, self.traffic_manager.vehicles
+            action, self.dt, self.traffic_manager.vehicles, algo_name=self.current_algo
         )
 
         # 2. 更新背景车辆

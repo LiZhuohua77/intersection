@@ -74,7 +74,7 @@ def parse_args():
     parser.add_argument("--algo", type=str, default="ppo_gru",
                         choices=["sagi_ppo", "ppo_gru", "ppo_mlp"], 
                         help="The algorithm of the trained agent to evaluate.")
-    parser.add_argument("--model_path", type=str, default="D:/Code/intersection/models/final_model.zip",
+    parser.add_argument("--model_path", type=str, default="D:/Code/intersection/models/ppo_gru_final_model.zip",
                         help="Path to the saved model .zip file (e.g., 'models/final_model.zip').")
     parser.add_argument("--num-episodes-per-driver", type=int, default=1,
                         help="Number of episodes to run for EACH driver type for evaluation.")
@@ -105,7 +105,7 @@ def main():
     
     # --- 2. 创建环境和游戏引擎 ---
     # 初始场景可以设置为一个通用值，后续在reset中动态指定
-    env = TrafficEnv(scenario='unprotected_left_turn')
+    env = TrafficEnv(scenario='head_on_conflict')
     env.reset(seed=args.seed)
     
     game_engine = GameEngine(width=800, height=800)
@@ -167,7 +167,7 @@ def main():
                 total_episode_counter += 1
                 # [MODIFIED] 在 reset 时传入驾驶员配置
                 reset_options = {
-                    'scenario': 'unprotected_left_turn', 
+                    'scenario': 'head_on_conflict', 
                     'algo': args.algo,
                     'hv_personality': personality,
                     'hv_intent': intent

@@ -45,14 +45,15 @@ class LongitudinalPlanner:
         
         print(f"车辆 {self.vehicle.vehicle_id} 初始化规划器，个性: {self.personality}, 意图: {self.intent}")
 
-    def get_target_speed(self, all_vehicles) -> float:
+    def get_target_speed(self, all_vehicles) -> dict:
         """
         [最终版]
         该方法实现了分层级的、动态的实时速度决策。
         1. 最高优先级：处理与RL Agent的交互，由预设的'intent' ('GO'/'YIELD')主导。
         2. 第二优先级：处理与其他HV的交互，由基于规则的'has_priority_over'主导。
         3. 默认行为：标准跟驰或自由流。
-        """
+        """    
+           
         v_ego = self.vehicle.state['vx']
         
         # 定义一个安全的、用于“滚动让行”的目标速度（单位: m/s）
@@ -64,18 +65,15 @@ class LongitudinalPlanner:
 
         if conflicting_rl_agent and is_in_interaction_zone:
             if self.intent == 'GO':
-                # “GO”意图：无视AV，执行自由流。
-                # 此时 v_lead 和 gap 都为 None，IDM只计算自由流项。
-                return self.idm_model.get_target_speed(v_ego, None, None)
+                target_speed = self.idm_model.get_target_speed(v_ego, None, None)
+                return {'speed': target_speed, 'reason': 'INTENT_GO'}
 
             elif self.intent == 'YIELD':
-                # “YIELD”意图：将AV视为虚拟前车，并为其设置速度下限。
-                
-                # [核心修正] v_lead 是AV的真实速度和YIELD_TARGET_SPEED中的较大值
                 v_lead = max(conflicting_rl_agent.state['vx'], YIELD_TARGET_SPEED)
-                
                 gap = self.vehicle.dist_to_intersection_entry
-                return self.idm_model.get_target_speed(v_ego, v_lead, gap)
+                target_speed = self.idm_model.get_target_speed(v_ego, v_lead, gap)
+                return {'speed': target_speed, 'reason': 'VIRTUAL_FOLLOW'} # [修改] 返回字典
+
 
         # --- 2. 第二优先级：与其他HV的交互 (仅在不与AV交互时触发) ---
         for other_hv in all_vehicles:
@@ -84,16 +82,19 @@ class LongitudinalPlanner:
                     # 如果需要让行另一辆HV，同样采用“滚动让行”策略
                     v_lead = max(other_hv.state['vx'], YIELD_TARGET_SPEED)
                     gap = self.vehicle.dist_to_intersection_entry
-                    return self.idm_model.get_target_speed(v_ego, v_lead, gap)
+                    target_speed = self.idm_model.get_target_speed(v_ego, v_lead, gap)
+                    return {'speed': target_speed, 'reason': 'YIELD_HV'}
 
         # --- 3. 默认行为：标准跟驰或自由流 ---
         lead_vehicle = self.vehicle.find_leader(all_vehicles)
         if lead_vehicle:
             v_lead = lead_vehicle.state['vx']
             gap = lead_vehicle.get_current_longitudinal_pos() - self.vehicle.get_current_longitudinal_pos() - lead_vehicle.length
-            return self.idm_model.get_target_speed(v_ego, v_lead, gap)
+            target_speed = self.idm_model.get_target_speed(v_ego, v_lead, gap)
+            return {'speed': target_speed, 'reason': 'FOLLOW_LEAD'}
         else:
-            return self.idm_model.get_target_speed(v_ego, None, None)
+            target_speed = self.idm_model.get_target_speed(v_ego, None, None)
+            return {'speed': target_speed, 'reason': 'FREE_FLOW'}
 
     def _find_conflicting_rl_agent(self, all_vehicles):
             """
