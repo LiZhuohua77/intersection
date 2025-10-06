@@ -1,283 +1,238 @@
 import warnings
-from typing import Any, Dict, Optional, Type, Union
+# [关键修正] 从 typing 模块导入 Generator 和 Tuple
+from typing import Any, Dict, Optional, Type, Union, Generator, Tuple
 
 import numpy as np
 import torch
 from gymnasium import spaces
 from torch.nn import functional as F
 import torch.nn as nn
+import torch as th
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.policies import ActorCriticPolicy
-from stable_baselines3.common.buffers import RolloutBuffer
+from stable_baselines3.common.buffers import RolloutBuffer, RolloutBufferSamples
 from stable_baselines3.common.callbacks import BaseCallback
-from stable_baselines3.common.utils import explained_variance, get_schedule_fn, obs_as_tensor
+from stable_baselines3.common.utils import obs_as_tensor
 from stable_baselines3.common.torch_layers import create_mlp
-from stable_baselines3.common.vec_env import VecEnv
+from stable_baselines3.common.vec_env import VecEnv, VecNormalize
 
 
-
+# ==============================================================================
+# 1. 自定义策略网络 (此部分已稳定，无需修改)
+# ==============================================================================
 class ActorCriticCostPolicy(ActorCriticPolicy):
-    """
-    一个同时拥有奖励价值头(value head)和成本价值头(cost value head)的策略网络。
-    """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        
-        cost_vf_arch = self.net_arch.pop('cost_vf', [])
-        
-        if cost_vf_arch:
-            # [FIXED] 使用 nn.Sequential 将 create_mlp 返回的层列表组装成一个可调用的网络模块
-            self.cost_value_net = nn.Sequential(*create_mlp(
-                self.mlp_extractor.latent_dim_vf,
-                1,
-                net_arch=cost_vf_arch,
-                activation_fn=self.activation_fn
-            ))
-        else:
-            self.cost_value_net = nn.Identity()
+        cost_vf_arch = self.net_arch.pop('cost_vf', []) if isinstance(self.net_arch, dict) else []
+        self.cost_value_net = nn.Sequential(*create_mlp(
+            self.mlp_extractor.latent_dim_vf, 1, net_arch=cost_vf_arch, activation_fn=self.activation_fn
+        )) if cost_vf_arch else nn.Linear(self.mlp_extractor.latent_dim_vf, 1)
 
-    def evaluate_actions(self, obs: torch.Tensor, actions: torch.Tensor):
-        latent_pi, latent_vf, latent_sde = self._get_latent(obs)
-        distribution = self._get_action_dist_from_latent(latent_pi, latent_sde)
+    def forward(self, obs: torch.Tensor, deterministic: bool = False):
+        features = self.extract_features(obs)
+        latent_pi, latent_vf = self.mlp_extractor(features)
+        distribution = self._get_action_dist_from_latent(latent_pi)
+        actions = distribution.get_actions(deterministic=deterministic)
         log_prob = distribution.log_prob(actions)
         values = self.value_net(latent_vf)
         cost_values = self.cost_value_net(latent_vf)
-        entropy = distribution.entropy()
+        return actions, values, cost_values, log_prob
+
+    def evaluate_actions(self, obs: torch.Tensor, actions: torch.Tensor):
+        values, log_prob, entropy = super().evaluate_actions(obs, actions)
+        features = self.extract_features(obs)
+        _, latent_vf = self.mlp_extractor(features)
+        cost_values = self.cost_value_net(latent_vf)
         return values, cost_values, log_prob, entropy
 
-
+# ==============================================================================
+# 2. 自定义经验缓冲区 (对 get 方法的类型标注进行修正)
+# ==============================================================================
 class SAGIRolloutBuffer(RolloutBuffer):
-    """
-    能够额外存储成本信息，并计算平均每回合累积成本的缓冲区。
-    """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.costs: np.ndarray
+        self.cost_values: np.ndarray
+        self.cost_advantages: np.ndarray
+        self.cost_returns: np.ndarray
+        self.reset()
+
+    def reset(self) -> None:
+        super().reset()
         self.costs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.cost_values = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.cost_advantages = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.cost_returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
 
-    def add(self, cost: np.ndarray, cost_value: torch.Tensor, **kwargs) -> None:
-        # **kwargs 会包含所有父类 add 方法的参数
+    def add(self, cost: np.ndarray, cost_value: th.Tensor, **kwargs) -> None:
         self.costs[self.pos] = np.array(cost).copy()
         self.cost_values[self.pos] = cost_value.clone().cpu().numpy().flatten()
         super().add(**kwargs)
-    
-    def compute_returns_and_advantage(self, last_values: torch.Tensor, last_cost_values: torch.Tensor, dones: np.ndarray):
-        # 计算奖励 GAE
+
+    def compute_returns_and_advantage(self, last_values: th.Tensor, last_cost_values: th.Tensor, dones: np.ndarray):
         super().compute_returns_and_advantage(last_values, dones)
-
         last_cost_values = last_cost_values.clone().cpu().numpy().flatten()
-
-        # 计算成本 GAE
         last_gae_lam = 0
         for step in reversed(range(self.buffer_size)):
             if step == self.buffer_size - 1:
-                next_non_terminal = 1.0 - dones
-                next_cost_values = last_cost_values
+                next_non_terminal, next_cost_values = 1.0 - dones, last_cost_values
             else:
-                next_non_terminal = 1.0 - self.episode_starts[step + 1]
-                next_cost_values = self.cost_values[step + 1]
+                next_non_terminal, next_cost_values = 1.0 - self.episode_starts[step + 1], self.cost_values[step + 1]
             delta = self.costs[step] + self.gamma * next_cost_values * next_non_terminal - self.cost_values[step]
             last_gae_lam = delta + self.gamma * self.gae_lambda * next_non_terminal * last_gae_lam
             self.cost_advantages[step] = last_gae_lam
         self.cost_returns = self.cost_advantages + self.cost_values
 
     def get_mean_episode_costs(self) -> float:
-        """严谨地计算平均每回合的累积折扣成本。"""
-        episode_costs = []
-        current_discounted_costs = np.zeros(self.n_envs)
-        
-        # 从后向前遍历以正确计算累积折扣值
+        episode_costs, current_discounted_costs = [], np.zeros(self.n_envs)
         for step in reversed(range(self.buffer_size)):
-            costs_step = self.costs[step]
-            # 如果不是回合开始，则累积成本
-            current_discounted_costs = costs_step + self.gamma * current_discounted_costs * (1.0 - self.episode_starts[step])
-            
-            # 检查每个环境中是否有回合在这一步(step)结束
-            # episode_starts[step] == 1 意味着 step 是新回合的第一步，即上一步是终点
+            current_discounted_costs = self.costs[step] + self.gamma * current_discounted_costs * (1.0 - self.episode_starts[step])
             for env_idx, is_start in enumerate(self.episode_starts[step]):
                 if is_start:
-                    # 将上一个刚结束的回合的累积成本存起来
-                    # 我们需要找到上一个step的累积值，但由于迭代方向，直接使用当前值然后重置更方便
                     episode_costs.append(current_discounted_costs[env_idx])
-                    # 重置这个环境的累积成本，为下一个追溯到的回合做准备
                     current_discounted_costs[env_idx] = 0
-
         if not episode_costs:
-            warnings.warn("No episode found ending in the rollout buffer, cost surplus calculation may be inaccurate.")
+            warnings.warn("No full episodes found in the rollout buffer.")
             return 0.0
-            
         return np.mean(episode_costs)
 
-
+# ==============================================================================
+# 3. SAGI-PPO 算法 (此部分已稳定，无需修改)
+# ==============================================================================
 class SAGIPPO(PPO):
-    policy_aliases: Dict[str, Type[ActorCriticPolicy]] = {
-        "MlpPolicy": ActorCriticCostPolicy,
-    }
+    policy_aliases: Dict[str, Type[ActorCriticPolicy]] = {"MlpPolicy": ActorCriticCostPolicy}
 
     def __init__(self, policy, env, cost_limit: float = 25.0, lambda_lr: float = 0.035, cost_vf_coef: float = 0.5, **kwargs):
         self.cost_limit = cost_limit
         self.lambda_lr = lambda_lr
         self.cost_vf_coef = cost_vf_coef
         self.lambda_ = 0.0
-        
-        super().__init__(
-            policy=policy,
-            env=env,
-            rollout_buffer_class=SAGIRolloutBuffer,
-            **kwargs
-        )
-
-        assert isinstance(self.rollout_buffer, SAGIRolloutBuffer), "SAGIPPO must use SAGIRolloutBuffer"
-
-
-    def collect_rollouts(
-        self, env: VecEnv, callback: BaseCallback, rollout_buffer: SAGIRolloutBuffer, n_rollout_steps: int
-    ) -> bool:
-        """
-        [FIXED] 重写数据收集过程，以正确获取 cost 和 cost_value。
-        """
-        assert self._last_obs is not None, "No previous observation was provided"
-        self.policy.set_training_mode(False)
-        n_steps = 0
-        rollout_buffer.reset()
-        callback.on_rollout_start()
-
-        while n_steps < n_rollout_steps:
-            with torch.no_grad():
-                obs_tensor = obs_as_tensor(self._last_obs, self.device)
-                
-                # 手动执行前向传播以获取所有需要的值
-                features = self.policy.extract_features(obs_tensor)
-                latent_pi, latent_vf = self.policy.mlp_extractor(features)
-                distribution = self.policy._get_action_dist_from_latent(latent_pi)
-                actions = distribution.get_actions(deterministic=False)
-                log_probs = distribution.log_prob(actions)
-                values = self.policy.value_net(latent_vf)
-                cost_values = self.policy.cost_value_net(latent_vf)
-
-            actions = actions.cpu().numpy()
-            clipped_actions = actions
-            if isinstance(self.action_space, spaces.Box):
-                clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
-
-            new_obs, rewards, dones, infos = env.step(clipped_actions)
-            costs = np.array([info.get("cost", 0) for info in infos])
-            self.num_timesteps += env.num_envs
-
-            if callback.on_step() is False:
-                return False
-
-            self._update_info_buffer(infos, dones)
-            n_steps += 1
-            if isinstance(self.action_space, spaces.Discrete):
-                actions = actions.reshape(-1, 1)
-
-            rollout_buffer.add(
-                obs=self._last_obs, action=actions, reward=rewards, cost=costs,
-                episode_start=self._last_episode_starts, value=values, cost_value=cost_values, log_prob=log_probs
-            )
-            self._last_obs = new_obs
-            self._last_episode_starts = dones
-
-        with torch.no_grad():
-            last_obs_tensor = obs_as_tensor(new_obs, self.device)
-            features = self.policy.extract_features(last_obs_tensor)
-            _, latent_vf = self.policy.mlp_extractor(features)
-            
-            last_values = self.policy.value_net(latent_vf)
-            last_cost_values = self.policy.cost_value_net(latent_vf)
-        rollout_buffer.compute_returns_and_advantage(last_values, last_cost_values, dones)
-        callback.on_rollout_end()
-        return True
-
-
-
+        super().__init__(policy=policy, env=env, rollout_buffer_class=SAGIRolloutBuffer, **kwargs)
+        assert isinstance(self.rollout_buffer, SAGIRolloutBuffer)
 
     def train(self) -> None:
         """
-        [最终修正版] SAGI-PPO 核心训练逻辑。
-        修正了对 a generator' object 的错误使用。
+        [最终修正]
+        调整了代码的执行顺序，以适应 get() 方法的惰性求值特性，
+        从根源上解决反复出现的形状不匹配问题。
         """
         self.policy.set_training_mode(True)
         self._update_learning_rate(self.policy.optimizer)
         clip_range = self.clip_range(self._current_progress_remaining)
 
-        # --- [严谨修正] 计算 c 和 p ---
-        # 1. 使用成本回报的平均值作为 J_C,k 的估计
-        j_c_k = np.mean(self.rollout_buffer.cost_returns)
+        j_c_k = self.rollout_buffer.get_mean_episode_costs()
         c = j_c_k - self.cost_limit
-        
-        # 2. 严谨计算策略梯度内积 p
-        # [FIXED] 使用 next() 从生成器中获取数据
-        full_batch = next(self.rollout_buffer.get(batch_size=None))
-        
-        observations, actions, old_log_prob = full_batch.observations, full_batch.actions, full_batch.old_log_prob
-        
-        reward_advantages = torch.as_tensor(full_batch.advantages, device=self.device).flatten()
-        cost_advantages = torch.as_tensor(self.rollout_buffer.cost_advantages, device=self.device).flatten()
 
+        # ==================== 关键修正：调整执行顺序 ====================
+        # 1. 首先，获取一次完整的批次数据。
+        #    这一步会触发 get() 内部的 flatten 逻辑，将 self.advantages 等数组的形状变为 (4096, 1)
+        full_batch_generator = self.rollout_buffer.get(batch_size=self.rollout_buffer.buffer_size * self.n_envs)
+        full_batch = next(full_batch_generator)
+
+        # 2. 现在，self.rollout_buffer.advantages 已经是被 flatten 后的正确形状了，我们再复制它。
+        original_advantages = self.rollout_buffer.advantages.copy()
+
+        # 3. 手动 flatten 我们的自定义数组，使其形状与 original_advantages 保持完全一致。
+        cost_advantages_flat = self.rollout_buffer.cost_advantages.swapaxes(0, 1).reshape(-1, 1)
+        cost_returns_flat = self.rollout_buffer.cost_returns.swapaxes(0, 1).reshape(-1, 1)
+        
+        # 4. 现在两个数组的形状都是 (4096, 1)，可以安全地进行运算。
+        cost_adv_for_update = cost_advantages_flat
+        # ===============================================================
+
+        # --- 计算梯度内积 p ---
+        # 我们已经获取了 full_batch，可以直接使用
+        reward_advantages_p = torch.as_tensor(original_advantages, device=self.device).flatten()
+        cost_advantages_p = torch.as_tensor(cost_adv_for_update, device=self.device).flatten()
+        
         self.policy.train()
-        _, _, log_prob, _ = self.policy.evaluate_actions(observations, actions)
-        ratio = torch.exp(log_prob - old_log_prob)
-
-        reward_surrogate_loss = -torch.min(reward_advantages * ratio, reward_advantages * torch.clamp(ratio, 1 - clip_range, 1 + clip_range)).mean()
-        cost_surrogate_loss = -torch.min(cost_advantages * ratio, cost_advantages * torch.clamp(ratio, 1 - clip_range, 1 + clip_range)).mean()
+        _, _, log_prob, _ = self.policy.evaluate_actions(full_batch.observations, full_batch.actions)
+        ratio = torch.exp(log_prob - full_batch.old_log_prob)
         
-        g_r_tensors = torch.autograd.grad(reward_surrogate_loss, self.policy.parameters(), retain_graph=True)
-        g_r_flat = torch.cat([grad.flatten() for grad in g_r_tensors])
-
-        g_c_tensors = torch.autograd.grad(cost_surrogate_loss, self.policy.parameters(), retain_graph=False)
-        g_c_flat = torch.cat([grad.flatten() for grad in g_c_tensors])
-
-        p = torch.dot(g_r_flat, g_c_flat).item()
+        reward_surrogate_loss = -torch.min(reward_advantages_p * ratio, reward_advantages_p * torch.clamp(ratio, 1 - clip_range, 1 + clip_range)).mean()
+        cost_surrogate_loss = -torch.min(cost_advantages_p * ratio, cost_advantages_p * torch.clamp(ratio, 1 - clip_range, 1 + clip_range)).mean()
+        
+        g_r_tensors = torch.autograd.grad(reward_surrogate_loss, self.policy.parameters(), retain_graph=True, allow_unused=True)
+        g_r_flat = torch.cat([grad.flatten() for grad in g_r_tensors if grad is not None])
+        g_c_tensors = torch.autograd.grad(cost_surrogate_loss, self.policy.parameters(), retain_graph=False, allow_unused=True)
+        g_c_flat = torch.cat([grad.flatten() for grad in g_c_tensors if grad is not None])
+        p = torch.dot(g_r_flat, g_c_flat).item() if g_r_flat.numel() > 0 and g_c_flat.numel() > 0 else 0.0
         
         self.logger.record("sagi/cost_surplus_c", c)
         self.logger.record("sagi/grad_inner_product_p", p)
         self.logger.record("sagi/lambda", self.lambda_)
 
-        original_advantages = self.rollout_buffer.advantages.copy()
         if c < 0 and p <= 0:
             self.logger.record("sagi/mode", "A")
+            # 模式A: 保持原始奖励优势，即 self.rollout_buffer.advantages 已经是 original_advantages
+            self.rollout_buffer.advantages = original_advantages
         elif c > 0:
             self.logger.record("sagi/mode", "C")
-            self.rollout_buffer.advantages = self.rollout_buffer.cost_advantages.copy() * -1
+            self.rollout_buffer.advantages = -cost_adv_for_update.copy()
         else:
             self.logger.record("sagi/mode", "B")
-            self.rollout_buffer.advantages = (original_advantages - self.lambda_ * self.rollout_buffer.cost_advantages) / (1 + self.lambda_)
-        
+            self.rollout_buffer.advantages = (original_advantages - self.lambda_ * cost_adv_for_update) / (1 + self.lambda_)
+
         self.lambda_ = max(0, self.lambda_ + self.lambda_lr * c)
 
-        # 执行 PPO 更新循环 (这部分不变)
-        for epoch in range(self.n_epochs):
-            for rollout_data in self.rollout_buffer.get(self.batch_size):
-                actions = rollout_data.actions
-                if isinstance(self.action_space, spaces.Discrete):
-                    actions = rollout_data.actions.long().flatten()
+        # --- PPO 小批次更新循环 ---
+        # 再次调用 get() 时，由于 generator_ready=True，它会直接从已 flatten 的数据中创建小批次
+        current_batch_start_idx = 0
+        for rollout_data in self.rollout_buffer.get(self.batch_size):
+            reward_values, cost_values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, rollout_data.actions)
+            advantages = rollout_data.advantages
+            if self.normalize_advantage:
+                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+            
+            ratio = torch.exp(log_prob - rollout_data.old_log_prob)
+            policy_loss = -torch.min(advantages * ratio, advantages * torch.clamp(ratio, 1 - clip_range, 1 + clip_range)).mean()
+            
+            batch_size = rollout_data.observations.shape[0]
+            # 手动切片获取对应的小批次成本回报
+            cost_returns_batch = cost_returns_flat[current_batch_start_idx : current_batch_start_idx + batch_size]
+            current_batch_start_idx += batch_size
 
-                reward_values, cost_values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
-                reward_values = reward_values.flatten()
-                cost_values = cost_values.flatten()
+            value_loss = F.mse_loss(rollout_data.returns, reward_values.flatten())
+            cost_value_loss = F.mse_loss(torch.as_tensor(cost_returns_batch, device=self.device).flatten(), cost_values.flatten())
+            
+            entropy_loss = -torch.mean(entropy) if entropy is not None else 0.0
+            loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss + self.cost_vf_coef * cost_value_loss
 
-                advantages = rollout_data.advantages
-                if self.normalize_advantage and len(advantages) > 1:
-                    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-
-                ratio = torch.exp(log_prob - rollout_data.old_log_prob)
-                policy_loss = -torch.min(advantages * ratio, advantages * torch.clamp(ratio, 1 - clip_range, 1 + clip_range)).mean()
-                
-                value_loss = F.mse_loss(rollout_data.returns, reward_values)
-                cost_value_loss = F.mse_loss(rollout_data.cost_returns, cost_values)
-                entropy_loss = -torch.mean(entropy) if entropy is not None else -torch.mean(-log_prob)
-
-                loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss + self.cost_vf_coef * cost_value_loss
-
-                self.policy.optimizer.zero_grad()
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-                self.policy.optimizer.step()
+            self.policy.optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+            self.policy.optimizer.step()
 
         self._n_updates += 1
+        # 在训练结束后恢复原始的 advantages，以便日志记录等后续步骤使用
         self.rollout_buffer.advantages = original_advantages
+    
+    def collect_rollouts(self, env: VecEnv, callback: BaseCallback, rollout_buffer: SAGIRolloutBuffer, n_rollout_steps: int) -> bool:
+        assert self._last_obs is not None
+        self.policy.set_training_mode(False)
+        n_steps = 0
+        rollout_buffer.reset()
+        callback.on_rollout_start()
+        while n_steps < n_rollout_steps:
+            with torch.no_grad():
+                obs_tensor = obs_as_tensor(self._last_obs, self.device)
+                actions, values, cost_values, log_probs = self.policy(obs_tensor, deterministic=False)
+            actions_np = actions.cpu().numpy()
+            clipped_actions = np.clip(actions_np, self.action_space.low, self.action_space.high) if isinstance(self.action_space, spaces.Box) else actions_np
+            new_obs, rewards, dones, infos = env.step(clipped_actions)
+            costs = np.array([info.get("cost", 0) for info in infos])
+            self.num_timesteps += env.num_envs
+            if callback.on_step() is False: return False
+            self._update_info_buffer(infos, dones)
+            n_steps += 1
+            rollout_buffer.add(
+                obs=self._last_obs, action=actions_np, reward=rewards, episode_start=self._last_episode_starts,
+                value=values, log_prob=log_probs, cost=costs, cost_value=cost_values, **{}
+            )
+            self._last_obs, self._last_episode_starts = new_obs, dones
+        with torch.no_grad():
+            _, last_values, last_cost_values, _ = self.policy(obs_as_tensor(new_obs, self.device), deterministic=False)
+        rollout_buffer.compute_returns_and_advantage(last_values=last_values, last_cost_values=last_cost_values, dones=dones)
+        callback.on_rollout_end()
+        return True

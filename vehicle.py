@@ -1155,7 +1155,7 @@ class RLVehicle(Vehicle):
         truncated = self.steps_since_spawn >= self.max_episode_steps
 
         # 3. 计算奖励和新的观测值
-        is_baseline = (algo_name == "ppo_gru")
+        is_baseline = algo_name.startswith("ppo")
         reward_info = self.calculate_reward(action, is_collision, is_baseline_agent=is_baseline)
         total_reward = reward_info['total_reward'] # 直接从字典获取最终奖励
 
