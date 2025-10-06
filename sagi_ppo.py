@@ -68,6 +68,8 @@ class SAGIRolloutBuffer(RolloutBuffer):
         # 计算奖励 GAE
         super().compute_returns_and_advantage(last_values, dones)
 
+        last_cost_values = last_cost_values.clone().cpu().numpy().flatten()
+
         # 计算成本 GAE
         last_gae_lam = 0
         for step in reversed(range(self.buffer_size)):
