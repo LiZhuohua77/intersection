@@ -194,37 +194,40 @@ class SAGIPPO(PPO):
         return True
 
 
+
     def train(self) -> None:
+        """
+        [最终修正版] SAGI-PPO 核心训练逻辑。
+        移除了冗余的优势计算，直接开始 SAGI 模式判断和 PPO 更新。
+        """
         self.policy.set_training_mode(True)
         self._update_learning_rate(self.policy.optimizer)
         clip_range = self.clip_range(self._current_progress_remaining)
         
-        # 计算奖励和成本的 GAE 优势函数
-        with torch.no_grad():
-            last_obs = obs_as_tensor(self.rollout_buffer.obs[-1], self.device)
-            _, last_values, last_cost_values, _ = self.policy(last_obs)
-        self.rollout_buffer.compute_returns_and_advantage(last_values, last_cost_values, self.rollout_buffer.dones)
-        
+        # [FIXED] 移除了在 train() 方法开头的 GAE 计算代码块。
+        # GAE 的计算已经在 collect_rollouts() 的末尾正确完成了。
+
         # --- [严谨修正] 计算 c 和 p ---
-        # 1. 严谨计算成本裕量 c
-        j_c_k = self.rollout_buffer.get_mean_episode_costs()
+        # 1. 使用成本回报的平均值作为 J_C,k 的估计
+        #    cost_returns 是在 collect_rollouts 末尾的 compute_returns_and_advantage 中计算的
+        j_c_k = np.mean(self.rollout_buffer.cost_returns)
         c = j_c_k - self.cost_limit
         
         # 2. 严谨计算策略梯度内积 p
         full_batch = self.rollout_buffer.get(batch_size=None)
         observations, actions, old_log_prob = full_batch.observations, full_batch.actions, full_batch.old_log_prob
-        reward_advantages = full_batch.advantages
+        
+        reward_advantages = torch.as_tensor(full_batch.advantages, device=self.device).flatten()
         cost_advantages = torch.as_tensor(self.rollout_buffer.cost_advantages, device=self.device).flatten()
 
-        self.policy.train() # 确保策略在训练模式
+        self.policy.train()
+        # 注意：这里的 evaluate_actions 返回4个值，与我们自定义的 policy 匹配
         _, _, log_prob, _ = self.policy.evaluate_actions(observations, actions)
         ratio = torch.exp(log_prob - old_log_prob)
 
-        # 定义用于求导的代理损失
         reward_surrogate_loss = -torch.min(reward_advantages * ratio, reward_advantages * torch.clamp(ratio, 1 - clip_range, 1 + clip_range)).mean()
         cost_surrogate_loss = -torch.min(cost_advantages * ratio, cost_advantages * torch.clamp(ratio, 1 - clip_range, 1 + clip_range)).mean()
         
-        # 通过“伪反向传播”获得 g_R 和 g_C
         g_r_tensors = torch.autograd.grad(reward_surrogate_loss, self.policy.parameters(), retain_graph=True)
         g_r_flat = torch.cat([grad.flatten() for grad in g_r_tensors])
 
@@ -232,13 +235,11 @@ class SAGIPPO(PPO):
         g_c_flat = torch.cat([grad.flatten() for grad in g_c_tensors])
 
         p = torch.dot(g_r_flat, g_c_flat).item()
-        # --- 修正结束 ---
-
+        
         self.logger.record("sagi/cost_surplus_c", c)
         self.logger.record("sagi/grad_inner_product_p", p)
         self.logger.record("sagi/lambda", self.lambda_)
 
-        # 根据 (c, p) 选择更新模式并修改优势函数
         original_advantages = self.rollout_buffer.advantages.copy()
         if c < 0 and p <= 0:
             self.logger.record("sagi/mode", "A")
@@ -251,7 +252,7 @@ class SAGIPPO(PPO):
         
         self.lambda_ = max(0, self.lambda_ + self.lambda_lr * c)
 
-        # 执行 PPO 更新循环
+        # 执行 PPO 更新循环 (这部分不变)
         for epoch in range(self.n_epochs):
             for rollout_data in self.rollout_buffer.get(self.batch_size):
                 actions = rollout_data.actions
@@ -267,10 +268,8 @@ class SAGIPPO(PPO):
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
                 ratio = torch.exp(log_prob - rollout_data.old_log_prob)
-                policy_loss_1 = advantages * ratio
-                policy_loss_2 = advantages * torch.clamp(ratio, 1 - clip_range, 1 + clip_range)
-                policy_loss = -torch.min(policy_loss_1, policy_loss_2).mean()
-
+                policy_loss = -torch.min(advantages * ratio, advantages * torch.clamp(ratio, 1 - clip_range, 1 + clip_range)).mean()
+                
                 value_loss = F.mse_loss(rollout_data.returns, reward_values)
                 cost_value_loss = F.mse_loss(rollout_data.cost_returns, cost_values)
                 entropy_loss = -torch.mean(entropy) if entropy is not None else -torch.mean(-log_prob)
