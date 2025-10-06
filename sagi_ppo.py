@@ -195,33 +195,31 @@ class SAGIPPO(PPO):
 
 
 
+
     def train(self) -> None:
         """
         [最终修正版] SAGI-PPO 核心训练逻辑。
-        移除了冗余的优势计算，直接开始 SAGI 模式判断和 PPO 更新。
+        修正了对 a generator' object 的错误使用。
         """
         self.policy.set_training_mode(True)
         self._update_learning_rate(self.policy.optimizer)
         clip_range = self.clip_range(self._current_progress_remaining)
-        
-        # [FIXED] 移除了在 train() 方法开头的 GAE 计算代码块。
-        # GAE 的计算已经在 collect_rollouts() 的末尾正确完成了。
 
         # --- [严谨修正] 计算 c 和 p ---
         # 1. 使用成本回报的平均值作为 J_C,k 的估计
-        #    cost_returns 是在 collect_rollouts 末尾的 compute_returns_and_advantage 中计算的
         j_c_k = np.mean(self.rollout_buffer.cost_returns)
         c = j_c_k - self.cost_limit
         
         # 2. 严谨计算策略梯度内积 p
-        full_batch = self.rollout_buffer.get(batch_size=None)
+        # [FIXED] 使用 next() 从生成器中获取数据
+        full_batch = next(self.rollout_buffer.get(batch_size=None))
+        
         observations, actions, old_log_prob = full_batch.observations, full_batch.actions, full_batch.old_log_prob
         
         reward_advantages = torch.as_tensor(full_batch.advantages, device=self.device).flatten()
         cost_advantages = torch.as_tensor(self.rollout_buffer.cost_advantages, device=self.device).flatten()
 
         self.policy.train()
-        # 注意：这里的 evaluate_actions 返回4个值，与我们自定义的 policy 匹配
         _, _, log_prob, _ = self.policy.evaluate_actions(observations, actions)
         ratio = torch.exp(log_prob - old_log_prob)
 
