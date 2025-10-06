@@ -182,8 +182,11 @@ class SAGIPPO(PPO):
 
         with torch.no_grad():
             last_obs_tensor = obs_as_tensor(new_obs, self.device)
-            _, last_values, last_cost_values, _ = self.policy(last_obs_tensor)
-
+            features = self.policy.extract_features(last_obs_tensor)
+            _, latent_vf = self.policy.mlp_extractor(features)
+            
+            last_values = self.policy.value_net(latent_vf)
+            last_cost_values = self.policy.cost_value_net(latent_vf)
         rollout_buffer.compute_returns_and_advantage(last_values, last_cost_values, dones)
         callback.on_rollout_end()
         return True
