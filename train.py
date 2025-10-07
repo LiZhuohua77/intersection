@@ -83,10 +83,10 @@ def parse_args():
     parser.add_argument("--algo", type=str, default="sagi_ppo_gru", 
                         choices=["sagi_ppo_mlp", "sagi_ppo_gru", "ppo_gru", "ppo_mlp"], 
                         help="The reinforcement learning algorithm to use.")
-    parser.add_argument("--n-envs", type=int, default=45, help="Number of parallel environments to use for training.")
+    parser.add_argument("--n-envs", type=int, default=20, help="Number of parallel environments to use for training.")
     
     # --- 训练过程参数 ---
-    parser.add_argument("--total-timesteps", type=int, default=6000000, help="Total timesteps to train the agent.")
+    parser.add_argument("--total-timesteps", type=int, default=8000000, help="Total timesteps to train the agent.")
     parser.add_argument("--save-freq", type=int, default=1000000, help="Save a checkpoint every N timesteps.")
 
     parser.add_argument("--n-steps", type=int, default=2048, help="Num steps to run for each env per rollout (buffer size).")

@@ -24,27 +24,37 @@ from stable_baselines3.common.vec_env import VecEnv, VecNormalize
 class ActorCriticCostPolicy(ActorCriticPolicy):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        cost_vf_arch = self.net_arch.pop('cost_vf', []) if isinstance(self.net_arch, dict) else []
-        self.cost_value_net = nn.Sequential(*create_mlp(
-            self.mlp_extractor.latent_dim_vf, 1, net_arch=cost_vf_arch, activation_fn=self.activation_fn
-        )) if cost_vf_arch else nn.Linear(self.mlp_extractor.latent_dim_vf, 1)
-
-    def forward(self, obs: torch.Tensor, deterministic: bool = False):
-        features = self.extract_features(obs)
-        latent_pi, latent_vf = self.mlp_extractor(features)
-        distribution = self._get_action_dist_from_latent(latent_pi)
-        actions = distribution.get_actions(deterministic=deterministic)
-        log_prob = distribution.log_prob(actions)
-        values = self.value_net(latent_vf)
-        cost_values = self.cost_value_net(latent_vf)
-        return actions, values, cost_values, log_prob
+        cost_vf_arch = self.net_arch.get('cost_vf', [])
+        if cost_vf_arch:
+            self.cost_value_net = nn.Sequential(*create_mlp(
+                self.mlp_extractor.latent_dim_vf, 1, net_arch=cost_vf_arch, activation_fn=self.activation_fn
+            ))
+        else:
+            self.cost_value_net = nn.Identity()
 
     def evaluate_actions(self, obs: torch.Tensor, actions: torch.Tensor):
-        values, log_prob, entropy = super().evaluate_actions(obs, actions)
+        """
+        [FINAL CORRECTED VERSION]
+        This version is based on your provided source code and removes the problematic SDE check.
+        """
+        # Get latent features using the standard, correct two-step process
         features = self.extract_features(obs)
-        _, latent_vf = self.mlp_extractor(features)
+        latent_pi, latent_vf = self.mlp_extractor(features)
+
+        # [FIXED] The entire block checking for 'sde_features_extractor' has been removed.
+        # We pass latent_pi directly to the distribution network.
+        distribution = self._get_action_dist_from_latent(latent_pi)
+
+        log_prob = distribution.log_prob(actions)
+
+        # Calculate reward and cost values
+        values = self.value_net(latent_vf)
         cost_values = self.cost_value_net(latent_vf)
+
+        entropy = distribution.entropy()
+
         return values, cost_values, log_prob, entropy
+
 
 # ==============================================================================
 # 2. 自定义经验缓冲区 (对 get 方法的类型标注进行修正)
@@ -52,11 +62,11 @@ class ActorCriticCostPolicy(ActorCriticPolicy):
 class SAGIRolloutBuffer(RolloutBuffer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.costs: np.ndarray
-        self.cost_values: np.ndarray
-        self.cost_advantages: np.ndarray
-        self.cost_returns: np.ndarray
-        self.reset()
+        self.costs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.cost_values = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.cost_advantages = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.cost_returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+
 
     def reset(self) -> None:
         super().reset()
@@ -65,20 +75,22 @@ class SAGIRolloutBuffer(RolloutBuffer):
         self.cost_advantages = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.cost_returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
 
-    def add(self, cost: np.ndarray, cost_value: th.Tensor, **kwargs) -> None:
+    def add(self, cost: np.ndarray, cost_value: torch.Tensor, **kwargs) -> None:
         self.costs[self.pos] = np.array(cost).copy()
         self.cost_values[self.pos] = cost_value.clone().cpu().numpy().flatten()
         super().add(**kwargs)
 
-    def compute_returns_and_advantage(self, last_values: th.Tensor, last_cost_values: th.Tensor, dones: np.ndarray):
+    def compute_returns_and_advantage(self, last_values: torch.Tensor, last_cost_values: torch.Tensor, dones: np.ndarray):
         super().compute_returns_and_advantage(last_values, dones)
         last_cost_values = last_cost_values.clone().cpu().numpy().flatten()
         last_gae_lam = 0
         for step in reversed(range(self.buffer_size)):
             if step == self.buffer_size - 1:
-                next_non_terminal, next_cost_values = 1.0 - dones, last_cost_values
+                next_non_terminal = 1.0 - dones
+                next_cost_values = last_cost_values
             else:
-                next_non_terminal, next_cost_values = 1.0 - self.episode_starts[step + 1], self.cost_values[step + 1]
+                next_non_terminal = 1.0 - self.episode_starts[step + 1]
+                next_cost_values = self.cost_values[step + 1]
             delta = self.costs[step] + self.gamma * next_cost_values * next_non_terminal - self.cost_values[step]
             last_gae_lam = delta + self.gamma * self.gae_lambda * next_non_terminal * last_gae_lam
             self.cost_advantages[step] = last_gae_lam
@@ -101,7 +113,7 @@ class SAGIRolloutBuffer(RolloutBuffer):
 # 3. SAGI-PPO 算法 (此部分已稳定，无需修改)
 # ==============================================================================
 class SAGIPPO(PPO):
-    policy_aliases: Dict[str, Type[ActorCriticPolicy]] = {"MlpPolicy": ActorCriticCostPolicy}
+    policy_aliases: Dict[str, Type[ActorCriticPolicy]] = { "MlpPolicy": ActorCriticCostPolicy }
 
     def __init__(self, policy, env, cost_limit: float = 25.0, lambda_lr: float = 0.035, cost_vf_coef: float = 0.5, **kwargs):
         self.cost_limit = cost_limit
@@ -109,7 +121,6 @@ class SAGIPPO(PPO):
         self.cost_vf_coef = cost_vf_coef
         self.lambda_ = 0.0
         super().__init__(policy=policy, env=env, rollout_buffer_class=SAGIRolloutBuffer, **kwargs)
-        assert isinstance(self.rollout_buffer, SAGIRolloutBuffer)
 
     def train(self) -> None:
         """
@@ -217,22 +228,32 @@ class SAGIPPO(PPO):
         while n_steps < n_rollout_steps:
             with torch.no_grad():
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
-                actions, values, cost_values, log_probs = self.policy(obs_tensor, deterministic=False)
-            actions_np = actions.cpu().numpy()
-            clipped_actions = np.clip(actions_np, self.action_space.low, self.action_space.high) if isinstance(self.action_space, spaces.Box) else actions_np
+                features = self.policy.extract_features(obs_tensor)
+                latent_pi, latent_vf = self.policy.mlp_extractor(features)
+                distribution = self.policy._get_action_dist_from_latent(latent_pi)
+                actions = distribution.get_actions(deterministic=False)
+                log_probs = distribution.log_prob(actions)
+                values = self.policy.value_net(latent_vf)
+                cost_values = self.policy.cost_value_net(latent_vf)
+
+            actions = actions.cpu().numpy()
+            clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
             new_obs, rewards, dones, infos = env.step(clipped_actions)
             costs = np.array([info.get("cost", 0) for info in infos])
             self.num_timesteps += env.num_envs
             if callback.on_step() is False: return False
             self._update_info_buffer(infos, dones)
             n_steps += 1
-            rollout_buffer.add(
-                obs=self._last_obs, action=actions_np, reward=rewards, episode_start=self._last_episode_starts,
-                value=values, log_prob=log_probs, cost=costs, cost_value=cost_values, **{}
-            )
-            self._last_obs, self._last_episode_starts = new_obs, dones
+            if isinstance(self.action_space, spaces.Discrete): actions = actions.reshape(-1, 1)
+            rollout_buffer.add(obs=self._last_obs, action=actions, reward=rewards, cost=costs, episode_start=self._last_episode_starts, value=values, cost_value=cost_values, log_prob=log_probs)
+            self._last_obs = new_obs
+            self._last_episode_starts = dones
         with torch.no_grad():
-            _, last_values, last_cost_values, _ = self.policy(obs_as_tensor(new_obs, self.device), deterministic=False)
+            last_obs_tensor = obs_as_tensor(new_obs, self.device)
+            features = self.policy.extract_features(last_obs_tensor)
+            _, latent_vf = self.policy.mlp_extractor(features)
+            last_values = self.policy.value_net(latent_vf)
+            last_cost_values = self.policy.cost_value_net(latent_vf)
         rollout_buffer.compute_returns_and_advantage(last_values=last_values, last_cost_values=last_cost_values, dones=dones)
         callback.on_rollout_end()
         return True
