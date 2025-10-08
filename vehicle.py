@@ -1201,8 +1201,13 @@ class RLVehicle(Vehicle):
         self.last_longitudinal_pos = self.get_current_longitudinal_pos()
         self.last_action = action
 
-        # --- 8. 准备并返回所有信息 ---
-        info = {"cost": cost, 'failure': 'collision' if is_collision else None}
+        failure_reason = None
+        if is_collision:
+            failure_reason = 'collision'
+        elif is_off_track:
+            failure_reason = 'off_track'
+        
+        info = {"cost": cost, 'failure': failure_reason}
         # 将详细的奖励分量添加到info字典中，以便在训练脚本中记录
         info.update({f"reward_{k}": v for k, v in reward_info.items()})
         

@@ -1063,28 +1063,32 @@ class Road:
         pygame.draw.circle(surface, (255, 255, 255), (screen_x, screen_y), point_radius + 2, 2)
 
 
-    def _potential_func(self, u):
+    def _potential_func(self, u: float) -> float:
         """
-        利用查表插值+线性外推计算势能值
+        [新] 基于二次函数的势场计算。
+        在中心安全区内成本为0，离开安全区后成本随距离二次方增长。
+
+        参数:
+            u (float): 归一化的横向偏离距离。
+                       u=0: 在中心线; u=1: 在车道线。
+        返回:
+            float: 计算出的势能/成本值。
+        """
+        # --- 可调参数 ---
+        # 定义安全区的宽度。0.5意味着中心线左右各 0.5 * 半车道宽 (即1/4车道宽) 是0成本区。
+        # 如果车道宽4米，这里代表中心正负1米内成本为0。
+        SAFE_ZONE_RATIO = 0.5 
         
-        Args:
-            u (float): 归一化的横向距离
-            
-        Returns:
-            float: 计算得到的势能值
-            
-        Notes:
-            使用预计算的积分值进行高效插值，并保持偶函数性质
-            在查表范围外使用线性外推
-        """
-        u = abs(float(u))
-        if u <= self.u_max:
-            # 在非均匀网格上插值 I(u)
-            return float(np.interp(u, self.t_grid, self.I_grid))
+        # 定义惩罚的严厉程度。这个值越大，成本增长越快。
+        PENALTY_FACTOR = 5.0
+
+        if u <= SAFE_ZONE_RATIO:
+            # 在安全区内，成本为0
+            return 0.0
         else:
-            # 线性外推：I(u) ≈ I(u_max) + eps * (u - u_max)
-            slope = self.eps + self.A * np.exp(-((self.u_max - 0.5) / self.sigma) ** 2)
-            return float(self.I_grid[-1] + (u - self.u_max) * slope)
+            # 在安全区外，成本按 (u - 安全区边界) 的平方增长
+            deviation = u - SAFE_ZONE_RATIO
+            return PENALTY_FACTOR * (deviation ** 2)
 
     def get_potential_at_point(self, x, y, target_route_str=None):
         """

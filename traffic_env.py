@@ -159,7 +159,6 @@ class TrafficEnv(gym.Env):
 
         # 2. 更新背景车辆
         self.traffic_manager.update_background_traffic(self.dt)
-        
         info.update(self._get_info())
         
         return observation, reward, terminated, truncated, info

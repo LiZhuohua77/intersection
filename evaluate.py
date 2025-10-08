@@ -72,10 +72,10 @@ def parse_args():
         --seed: 随机种子，用于确保实验可重复性
     """
     parser = argparse.ArgumentParser(description="Evaluate a trained PPO/SAGI-PPO agent against different driver types.")
-    parser.add_argument("--algo", type=str, default="sagi_ppo_gru",
+    parser.add_argument("--algo", type=str, default="ppo_gru",
                         choices=["sagi_ppo_mlp", "sagi_ppo_gru", "ppo_gru", "ppo_mlp"], 
                         help="The algorithm of the trained agent to evaluate.")
-    parser.add_argument("--model_path", type=str, default="D:/Code/intersection/models/sagi_ppo_gru_final_model.zip",
+    parser.add_argument("--model_path", type=str, default="D:/Code/intersection/models/ppo_gru_final_model.zip",
                         help="Path to the saved model .zip file (e.g., 'models/final_model.zip').")
     parser.add_argument("--num-episodes-per-driver", type=int, default=1,
                         help="Number of episodes to run for EACH driver type for evaluation.")
@@ -103,6 +103,8 @@ def main():
     # --- 设置随机种子 ---
     set_seed(args.seed)
     print(f"--- Setting random seed to {args.seed} ---")
+
+    GAMMA = 0.99 # 假设与训练时相同
     
     # --- 2. 创建环境和游戏引擎 ---
     # 初始场景可以设置为一个通用值，后续在reset中动态指定
@@ -160,8 +162,8 @@ def main():
             
             # 为每种驾驶员初始化统计数据
             eval_stats = {
-                "rewards": [], "costs": [], "lengths": [],
-                "success": 0, "collision": 0, "timeout": 0
+                "rewards": [], "costs": [], "lengths": [], "discounted_costs": [],
+                "success": 0, "collision": 0, "timeout": 0, "off_track": 0
             }
             
             for i in range(args.num_episodes_per_driver):
@@ -176,6 +178,8 @@ def main():
                 state, info = env.reset(options=reset_options)
                 
                 episode_reward, episode_cost, episode_len = 0, 0, 0
+
+                episode_discounted_cost = 0
                 
                 print(f"\n--- [全局回合 {total_episode_counter}, {driver_key} 第 {i+1}/{args.num_episodes_per_driver} 回合] ---")
 
@@ -190,18 +194,24 @@ def main():
                         episode_reward += reward
                         episode_cost += info.get('cost', 0)
                         episode_len += 1
+                        episode_discounted_cost += (GAMMA ** (episode_len - 1)) * info.get('cost', 0)
                         done = terminated or truncated
 
                         if done:
                             eval_stats["rewards"].append(episode_reward)
                             eval_stats["costs"].append(episode_cost)
                             eval_stats["lengths"].append(episode_len)
+                            eval_stats["discounted_costs"].append(episode_discounted_cost)
                             
                             outcome = "success"
                             if info.get('failure') == 'collision':
                                 eval_stats["collision"] += 1
                                 outcome = "collision"
                                 print(f"结果: 碰撞 (Collision) | 回合奖励: {episode_reward:.2f}")
+                            elif info.get('failure') == 'off_track':
+                                eval_stats["off_track"] += 1
+                                outcome = "off_track"
+                                print(f"结果: 偏离轨迹 (Off-track) | 回合奖励: {episode_reward:.2f}")
                             elif truncated:
                                 eval_stats["timeout"] += 1
                                 outcome = "timeout"
@@ -300,10 +310,12 @@ def main():
             print(f"总回合数: {num_episodes}")
             print(f"平均奖励: {np.mean(stats['rewards']):.2f} ± {np.std(stats['rewards']):.2f}")
             print(f"平均成本: {np.mean(stats['costs']):.2f} ± {np.std(stats['costs']):.2f}")
+            print(f"平均累积折扣成本: {np.mean(stats['discounted_costs']):.2f} ± {np.std(stats['discounted_costs']):.2f}")
             print(f"平均长度: {np.mean(stats['lengths']):.2f}")
             print("-" * 20)
             print(f"成功率: {stats['success'] / num_episodes:.2%}")
             print(f"碰撞率: {stats['collision'] / num_episodes:.2%}")
+            print(f"偏离轨迹率: {stats['off_track'] / num_episodes:.2%}")
             print(f"超时率: {stats['timeout'] / num_episodes:.2%}")
         else:
             print(f"\n--- 驾驶员类型 '{driver_key}' 没有完成任何回合的评估。 ---")
