@@ -63,7 +63,7 @@ class TrafficEnv(gym.Env):
         self.default_scenario = scenario
         # 1. 初始化环境组件
         self.road = Road()
-        self.traffic_manager = TrafficManager(self.road, max_vehicles=2)
+        self.traffic_manager = TrafficManager(self.road, max_vehicles=4)
         self.rl_agent = None
         self.dt = SIMULATION_DT
 

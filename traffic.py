@@ -44,135 +44,107 @@ from config import *
 class TrafficManager:
     """交通流量管理器"""
     
-    def __init__(self, road, max_vehicles=2):
+    def __init__(self, road, max_vehicles=6):
         self.road = road
         self.vehicles = []
         self.max_vehicles = max_vehicles
         self.vehicle_id_counter = 1
         self.completed_vehicles_data = []
-        self.current_pattern = 'normal'
-        self.current_scenario = 'random'
-        
+        self.current_scenario = 'random_traffic'
+        self.simulation_time = 0.0
 
         # 交通流量参数
-        self.spawn_intervals = {
-            'north': 3.0,  # 从北边进入的车辆间隔时间（秒）
-            'south': 3.0,  # 从南边进入的车辆间隔时间（秒）
-            'east': 3.0,   # 从东边进入的车辆间隔时间（秒）
-            'west': 3.0    # 从西边进入的车辆间隔时间（秒）
-        }
-        
-        # 上次生成车辆的时间
-        self.last_spawn_time = {
-            'north': 0,
-            'south': 0,
-            'east': 0,
-            'west': 0
-        }
-        
-        # 转向概率分布
-        self.turn_probabilities = {
-            'north': {'north': 0.0, 'south': 0.4, 'east': 0.3, 'west': 0.3},
-            'south': {'north': 0.4, 'south': 0.0, 'east': 0.3, 'west': 0.3},
-            'east': {'north': 0.3, 'south': 0.3, 'east': 0.0, 'west': 0.4},
-            'west': {'north': 0.3, 'south': 0.3, 'east': 0.4, 'west': 0.0}
-        }
-        
-        # 交通流量模式
-        self.traffic_patterns = {
-            'rush_hour': {
-            'multiplier': 0.5,  # Interval time multiplier (smaller means denser traffic)
-            'description': 'Rush Hour - Dense Traffic'
+        self.flow_config = {
+            'base_intervals': {
+                'north': 3.0, 'south': 3.0, 'east': 3.0, 'west': 3.0
             },
-            'normal': {
-            'multiplier': 1.0,
-            'description': 'Normal - Medium Traffic'
-            },
-            'light': {
-            'multiplier': 2.0,
-            'description': 'Light - Sparse Traffic'
-            },
-            'night': {
-            'multiplier': 3.0,
-            'description': 'Night - Very Light Traffic'
+            'turn_probabilities': {
+                'north': {'south': 0.4, 'east': 0.3, 'west': 0.3},
+                'south': {'north': 0.4, 'east': 0.3, 'west': 0.3},
+                'east': {'west': 0.4, 'north': 0.3, 'south': 0.3},
+                'west': {'east': 0.4, 'north': 0.3, 'south': 0.3}
             }
         }
         
-        self.current_pattern = 'normal'
+        self.next_spawn_times = {direction: 0 for direction in self.flow_config['base_intervals']}
+        self._reschedule_all_spawns()
     
-    def set_traffic_pattern(self, pattern_name):
-        """设置交通流量模式"""
-        if pattern_name in self.traffic_patterns:
-            self.current_pattern = pattern_name
-            print(f"交通模式切换为: {self.traffic_patterns[pattern_name]['description']}")
-    
-    def adjust_flow_rate(self, direction, interval):
-        """调整特定方向的车流间隔"""
-        if direction in self.spawn_intervals:
-            self.spawn_intervals[direction] = max(0.5, interval)
+    def set_base_interval(self, direction: str, interval: float):
+        """
+        [NEW] 新增的、用于直接控制交通密度的接口。
+        """
+        if direction in self.flow_config['base_intervals']:
+            self.flow_config['base_intervals'][direction] = max(0.5, interval)
+            print(f"Updated {direction} spawn interval to {interval}s.")
+        else:
+            print(f"Warning: Direction '{direction}' not found in flow_config.")
+
+    def _sample_next_interval(self, direction: str) -> float:
+        """
+        [SIMPLIFIED] 不再需要 pattern_multiplier，直接使用 base_interval。
+        """
+        mean_interval = self.flow_config['base_intervals'][direction]
+        u = 1.0 - random.random()
+        return -mean_interval * np.log(u)
+
+    def _reschedule_all_spawns(self):
+        for direction in self.next_spawn_times.keys():
+            self.next_spawn_times[direction] = self.simulation_time + self._sample_next_interval(direction)
     
     def get_random_destination(self, start_direction):
-        """根据概率选择目标方向"""
-        probabilities = self.turn_probabilities[start_direction]
-        directions = list(probabilities.keys())
-        weights = list(probabilities.values())
-        
+        probs = self.flow_config['turn_probabilities'][start_direction]
+        valid_dirs = {k: v for k, v in probs.items() if k != start_direction}
+        directions = list(valid_dirs.keys())
+        weights = np.array(list(valid_dirs.values()))
+        weights /= np.sum(weights)
         return np.random.choice(directions, p=weights)
     
     def can_spawn_vehicle(self, start_direction):
-        """检查是否可以在指定方向生成车辆"""
-        current_time = time.time()
-        
-        # 检查时间间隔
-        pattern_multiplier = self.traffic_patterns[self.current_pattern]['multiplier']
-        required_interval = self.spawn_intervals[start_direction] * pattern_multiplier
-        
-        if current_time - self.last_spawn_time[start_direction] < required_interval:
-            return False
-        
-        # 检查车辆数量限制
+        """[优化] 检查生成点是否被占用。"""
         if len(self.vehicles) >= self.max_vehicles:
             return False
-        
-        # 检查起始位置是否有车辆阻塞
-        spawn_routes = self.road.get_route_points(start_direction, 
-                                                self.get_random_destination(start_direction))
-        if not spawn_routes:
+            
+        spawn_point_data = self.road.get_route_points(start_direction, self.get_random_destination(start_direction))
+        if not spawn_point_data:
             return False
         
-        spawn_point = spawn_routes["smoothed"][0]
-        safe_distance = 80  # 安全距离
-        
+        spawn_point = np.array(spawn_point_data["smoothed"][0][:2])
+        safe_distance = 15  # 安全距离可以设小一些，只防止车辆重叠
+
         for vehicle in self.vehicles:
-            if not vehicle.completed:
-                dist = ((vehicle.state['x'] - spawn_point[0])**2 + (vehicle.state['y'] - spawn_point[1])**2)**0.5
-                if dist < safe_distance:
-                    return False
-        
+            # [FIXED] 通过 vehicle.state['x'] 和 vehicle.state['y'] 来获取位置
+            other_pos = np.array([vehicle.state['x'], vehicle.state['y']])
+            dist = np.linalg.norm(other_pos - spawn_point)
+            
+            if dist < safe_distance:
+                return False
         return True
     
-    def spawn_vehicle(self, start_direction):
-        """[修正后] 在指定方向生成车辆，并立即初始化其行为规划器。"""
-        if not self.can_spawn_vehicle(start_direction):
+    def spawn_vehicle(self, start_direction, end_direction=None, personality=None, intent=None):
+        """
+        [最终修正版] 创建一个背景车辆(HV)。
+        personality 和 intent 是可选的，如果没有提供，则会随机选择。
+        """
+        if len(self.vehicles) >= self.max_vehicles:
             return None
-        
-        end_direction = self.get_random_destination(start_direction)
+            
+        if end_direction is None:
+            end_direction = self.get_random_destination(start_direction)
         
         try:
-            # 1. 创建车辆实例
             vehicle = Vehicle(self.road, start_direction, end_direction, self.vehicle_id_counter)
             
-            # 2. [核心修正] 为新生成的车辆注入个性和意图
-            personalities = list(IDM_PARAMS.keys())
-            intents = ['GO', 'YIELD']
-            personality = random.choice(personalities)
-            intent = random.choice(intents)
+            # [核心修改] 如果外部没有指定 personality 和 intent，才进行随机选择
+            if personality is None:
+                personality = random.choice(list(IDM_PARAMS.keys()))
+            if intent is None:
+                intent = random.choice(['GO', 'YIELD'])
+            
+            # 使用最终确定的 personality 和 intent 初始化规划器
             vehicle.initialize_planner(personality, intent)
             
-            # 3. 将完全初始化的车辆添加到场景中
             self.vehicles.append(vehicle)
             self.vehicle_id_counter += 1
-            self.last_spawn_time[start_direction] = time.time()
             
             print(f"生成车辆 #{vehicle.vehicle_id}: 从 {start_direction} 到 {end_direction} (个性: {personality}, 意图: {intent})")
             return vehicle
@@ -195,35 +167,32 @@ class TrafficManager:
             print(f"无法生成RL Agent: {e}")
             return None
         
-    def update_background_traffic(self, dt):
-        """更新背景交通"""
-        if self.current_scenario == "random":
-            directions = ['north', 'south', 'east', 'west']
-            if random.random() < 0.1: 
-                self.spawn_vehicle(random.choice(directions))
+    def update_background_traffic(self, dt: float):
+        self.simulation_time += dt
+        if self.current_scenario == "random_traffic":
+            for direction, scheduled_time in self.next_spawn_times.items():
+                if self.simulation_time >= scheduled_time:
+                    # can_spawn_vehicle 现在只检查车辆数量和出生点是否被占用
+                    if self.can_spawn_vehicle(direction):
+                        self.spawn_vehicle(direction)
+                    self.next_spawn_times[direction] = self.simulation_time + self._sample_next_interval(direction)
         
-        # 更新所有车辆
-        for vehicle in self.vehicles[:]:
-            # [核心修正] 将此行移出if语句，为所有车辆（包括RL Agent）更新其环境上下文
+        for vehicle in self.vehicles:
             self._update_vehicle_context(vehicle)
             
-            # 仅更新背景车辆(HV)的决策和物理状态
+        for vehicle in self.vehicles[:]:
             if not getattr(vehicle, 'is_rl_agent', False):
                 vehicle.update(dt, self.vehicles)
-            
-            # 处理车辆完成的逻辑（这部分保持不变）
             if vehicle.completed:
-                if not getattr(vehicle, 'is_rl_agent', False):
-                    print(f"背景车辆 #{vehicle.vehicle_id} 已完成路径，正在归档...")
-                    self.completed_vehicles_data.append({
-                        'id': vehicle.vehicle_id,
-                        'type': 'background',
-                        'history': vehicle.get_speed_history()
-                    })
-                else:
-                    print(f"RL Agent 已完成路径。")
-                
                 self.vehicles.remove(vehicle)
+            
+    def clear_all_vehicles(self):
+        self.vehicles.clear()
+        self.completed_vehicles_data.clear()
+        self.vehicle_id_counter = 1
+        self.simulation_time = 0.0 # [新增] 重置仿真时钟
+        self._reschedule_all_spawns() # [新增] 重置生成计划
+        print("--- 已清空所有车辆和交通生成计划 ---")
 
     def _update_vehicle_context(self, vehicle):
         """
@@ -276,7 +245,6 @@ class TrafficManager:
         stats = self.get_traffic_stats()
         
         debug_texts = [
-            f"Traffic Mode: {self.traffic_patterns[self.current_pattern]['description']}",
             f"Total Vehicles: {stats['total_vehicles']}/{self.max_vehicles}",
             f"Average Speed: {stats['average_speed']:.1f} m/s",
             f"By Direction: N:{stats['by_direction']['north']} S:{stats['by_direction']['south']} E:{stats['by_direction']['east']} W:{stats['by_direction']['west']}"
@@ -321,72 +289,92 @@ class TrafficManager:
 
         agent = None
 
-        if scenario_name == "protected_left_turn":
-            # 场景：Agent从南向西左转，需要让行北向南直行的背景车
-            agent = self.spawn_rl_agent('south', 'west')
-            # 生成一辆有路权优势的背景车
-            bg_vehicle = Vehicle(self.road, 'north', 'south', self.vehicle_id_counter)
-            self.vehicles.append(bg_vehicle)
-            self.vehicle_id_counter += 1
-            print(f"背景车辆 #{bg_vehicle.vehicle_id}: 从北向南直行")
+        # --------------------------------------------------------------------------
+        # 阶段一：基础驾驶
+        # --------------------------------------------------------------------------
+        if scenario_name == "agent_only_simple":
+            # 1a: 随机直行或右转
+            routes = [
+                ('south', 'north'), ('north', 'south'), ('east', 'west'), ('west', 'east'),
+                ('south', 'east'), ('north', 'west'), ('east', 'north'), ('west', 'south')
+            ]
+            start_dir, end_dir = random.choice(routes)
+            agent = self.spawn_rl_agent(start_dir, end_dir)
 
-        elif scenario_name == "unprotected_left_turn":
-            # 场景：Agent从南向西左转，北向东左转的背景车需要让行Agent
-            agent = self.spawn_rl_agent('south', 'west')
-            # 生成一辆路权劣势的背景车
-            bg_vehicle = Vehicle(self.road, 'north', 'south', self.vehicle_id_counter)
-            self.vehicles.append(bg_vehicle)
-            self.vehicle_id_counter += 1
-            print(f"背景车辆 #{bg_vehicle.vehicle_id}: 从北向南直行")
+        elif scenario_name == "agent_only_left_turn":
+            # 1b: 随机左转
+            routes = [('south', 'west'), ('west', 'north'), ('north', 'east'), ('east', 'south')]
+            start_dir, end_dir = random.choice(routes)
+            agent = self.spawn_rl_agent(start_dir, end_dir)
 
+        # --------------------------------------------------------------------------
+        # 阶段二：合作交互
+        # --------------------------------------------------------------------------
+        elif scenario_name == "cooperative_yield":
+            # AV左转 vs HV直行，AV路权劣势。方向随机化。
+            scenarios = [
+                {'agent': ('south', 'west'), 'bg': ('north', 'south')},
+                {'agent': ('west', 'north'), 'bg': ('east', 'west')},
+                {'agent': ('north', 'east'), 'bg': ('south', 'north')},
+                {'agent': ('east', 'south'), 'bg': ('west', 'east')},
+            ]
+            chosen = random.choice(scenarios)
+            agent = self.spawn_rl_agent(chosen['agent'][0], chosen['agent'][1])
+            bg_vehicle = self.spawn_vehicle(chosen['bg'][0], chosen['bg'][1], personality='CONSERVATIVE')
+
+        # --------------------------------------------------------------------------
+        # 阶段三：竞争博弈
+        # --------------------------------------------------------------------------
         elif scenario_name == "head_on_conflict":
-             # 场景：Agent从南向西左转，对向车辆从北向东也左转，测试博弈
-            agent = self.spawn_rl_agent('south', 'north')
-            bg_vehicle = Vehicle(self.road, 'west', 'east', self.vehicle_id_counter)
-            self.vehicles.append(bg_vehicle)
-            self.vehicle_id_counter += 1
-            print(f"背景车辆 #{bg_vehicle.vehicle_id}: 从东向西直行")
+            # AV左转 vs HV迎头左转，路权模糊。方向随机化。
+            scenarios = [
+                {'agent': ('south', 'west'), 'bg': ('north', 'east')},
+                {'agent': ('west', 'north'), 'bg': ('east', 'south')},
+                {'agent': ('north', 'east'), 'bg': ('south', 'west')},
+                {'agent': ('east', 'south'), 'bg': ('west', 'north')},
+            ]
+            chosen = random.choice(scenarios)
+            agent = self.spawn_rl_agent(chosen['agent'][0], chosen['agent'][1])
+            bg_vehicle = self.spawn_vehicle(chosen['bg'][0], chosen['bg'][1], personality='NORMAL')
 
-        elif scenario_name == "agent_only":
-            # 场景：只有Agent，用于测试基本路径跟踪性能
-            agent = self.spawn_rl_agent('south', 'north')
-            
-        elif scenario_name == "east_west_traffic":
-            # 场景：只有东西方向的背景车辆，无RL智能体
-            # 生成从东向西行驶的背景车辆
-            bg_vehicle1 = Vehicle(self.road, 'east', 'west', self.vehicle_id_counter)
-            self.vehicles.append(bg_vehicle1)
-            self.vehicle_id_counter += 1
-            print(f"背景车辆 #{bg_vehicle1.vehicle_id}: 从东向西直行")
-            
-            # 没有RL智能体的场景需要返回None
-            return None
-            
-        elif scenario_name == "north_south_traffic":
-            # 场景：只有南北方向的背景车辆，无RL智能体
-            # 生成从北向南行驶的背景车辆
-            bg_vehicle1 = Vehicle(self.road, 'north', 'south', self.vehicle_id_counter)
-            self.vehicles.append(bg_vehicle1)
-            self.vehicle_id_counter += 1
-            print(f"背景车辆 #{bg_vehicle1.vehicle_id}: 从北向南直行")
-            
-            # 生成从南向北行驶的背景车辆
-            """ bg_vehicle2 = Vehicle(self.road, 'west', 'east', self.vehicle_id_counter)
-            self.vehicles.append(bg_vehicle2)
-            self.vehicle_id_counter += 1
-            print(f"背景车辆 #{bg_vehicle2.vehicle_id}: 从西向东直行") """
+        elif scenario_name == "crossing_conflict":
+            # AV直行 vs HV十字交叉直行。方向随机化。
+            scenarios = [
+                {'agent': ('south', 'north'), 'bg': ('west', 'east')},
+                {'agent': ('west', 'east'), 'bg': ('north', 'south')},
+                {'agent': ('north', 'south'), 'bg': ('east', 'west')},
+                {'agent': ('east', 'west'), 'bg': ('south', 'north')},
+            ]
+            chosen = random.choice(scenarios)
+            agent = self.spawn_rl_agent(chosen['agent'][0], chosen['agent'][1])
+            bg_vehicle = self.spawn_vehicle(chosen['bg'][0], chosen['bg'][1], personality='AGGRESSIVE')
 
-            bg_vehicle3 = Vehicle(self.road, 'south', 'west', self.vehicle_id_counter)
-            self.vehicles.append(bg_vehicle3)
-            self.vehicle_id_counter += 1
-            print(f"背景车辆 #{bg_vehicle3.vehicle_id}: 从南向西直行")
+        # --------------------------------------------------------------------------
+        # 阶段四：泛化训练
+        # --------------------------------------------------------------------------
+        elif scenario_name == "random_traffic":
+            # AV随机路线，并预先生成1-3辆随机HV，后续动态生成更多
+            for _ in range(random.randint(1, 3)):
+                start = random.choice(['north', 'south', 'east', 'west'])
+                self.spawn_vehicle(start)
 
-            # 没有RL智能体的场景需要返回None
-            return None
-
-        else: # 默认是随机交通流
-            # 如果是随机，我们只生成Agent，背景车会在后续的step中随机生成
-            agent = self.spawn_rl_agent('south', 'north')
-            print("默认场景：仅生成Agent，背景交通将随机出现。")
+            # 为AV寻找一个安全的出生点
+            spawn_success = False
+            for _ in range(10): # 最多尝试10次
+                start_dir = random.choice(['north', 'south', 'east', 'west'])
+                end_dir = self.get_random_destination(start_dir)
+                if self.can_spawn_vehicle(start_dir): # can_spawn_vehicle 检查出生点是否空闲
+                    #agent = self.spawn_rl_agent(start_dir, end_dir)
+                    spawn_success = True
+                    break
+            if not spawn_success:
+                # 如果10次都失败（交通太拥挤），则清空后只生成Agent
+                self.clear_all_vehicles()
+                start_dir = random.choice(['north', 'south', 'east', 'west'])
+                end_dir = self.get_random_destination(start_dir)
+                #agent = self.spawn_rl_agent(start_dir, end_dir)
+        
+        else:
+            raise ValueError(f"未知的场景名称: {scenario_name}")
         
         return agent
