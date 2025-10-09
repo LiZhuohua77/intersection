@@ -121,7 +121,7 @@ def main():
     # --- 1. [核心改进] 创建并行化的 Gym 环境 ---
     # 这是提升训练速度的关键
     env = make_vec_env(TrafficEnv, n_envs=args.n_envs, vec_env_cls=SubprocVecEnv,
-                       env_kwargs=dict(scenario='head_on_conflict'))
+                       env_kwargs=dict(scenario='agent_only_simple'))
 
     # --- 2. [核心改进] 定义自定义策略网络参数 ---
     policy_kwargs = {}

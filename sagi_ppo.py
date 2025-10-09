@@ -97,17 +97,42 @@ class SAGIRolloutBuffer(RolloutBuffer):
         self.cost_returns = self.cost_advantages + self.cost_values
 
     def get_mean_episode_costs(self) -> float:
-        episode_costs, current_discounted_costs = [], np.zeros(self.n_envs)
-        for step in reversed(range(self.buffer_size)):
-            current_discounted_costs = self.costs[step] + self.gamma * current_discounted_costs * (1.0 - self.episode_starts[step])
-            for env_idx, is_start in enumerate(self.episode_starts[step]):
-                if is_start:
-                    episode_costs.append(current_discounted_costs[env_idx])
-                    current_discounted_costs[env_idx] = 0
-        if not episode_costs:
-            warnings.warn("No full episodes found in the rollout buffer.")
-            return 0.0
-        return np.mean(episode_costs)
+            """
+            [CORRECTED VERSION]
+            Computes the mean of discounted costs for all completed episodes in the buffer.
+            """
+            episode_costs = []
+            # A running total of discounted costs for each environment
+            current_discounted_costs = np.zeros(self.n_envs)
+            
+            # Iterate backwards through the buffer
+            for step in reversed(range(self.buffer_size)):
+                # Create a boolean mask for environments where a new episode starts at this step
+                is_start_mask = self.episode_starts[step].astype(bool)
+
+                # If any episodes start here, it means episodes have just ended.
+                # Their total accumulated costs are in `current_discounted_costs`.
+                if np.any(is_start_mask):
+                    # Append the accumulated costs from the completed episodes to our list
+                    episode_costs.extend(current_discounted_costs[is_start_mask])
+                    # Reset the accumulator for those environments
+                    current_discounted_costs[is_start_mask] = 0.0
+
+                # Accumulate the cost for the current step into the running total.
+                # This happens *after* we've potentially recorded and reset.
+                current_discounted_costs = self.costs[step] + self.gamma * current_discounted_costs
+            
+            # The loop misses the very first set of episodes that don't start with a 'True'
+            # in the buffer, but this is standard and acceptable. We only average full episodes.
+            
+            if not episode_costs:
+                warnings.warn(
+                    "No full episodes found in the rollout buffer. "
+                    "Consider increasing n_rollout_steps or Rewarding faster termination."
+                )
+                return 0.0
+            
+            return np.mean(episode_costs)
 
 # ==============================================================================
 # 3. SAGI-PPO 算法 (此部分已稳定，无需修改)
@@ -129,6 +154,24 @@ class SAGIPPO(PPO):
         从根源上解决反复出现的形状不匹配问题。
         """
         self.policy.set_training_mode(True)
+
+        # ======================= 在这里插入深度诊断代码 =======================
+        total_costs_in_buffer = np.sum(self.rollout_buffer.costs)
+        total_episode_starts_in_buffer = np.sum(self.rollout_buffer.episode_starts)
+        
+        print("\n" + "="*50)
+        print("🔍 Deep Dive Buffer Inspection")
+        print(f"    Buffer Shape (Steps, Envs): {self.rollout_buffer.costs.shape}")
+        print(f"    Total costs in buffer: {total_costs_in_buffer}")
+        print(f"    Total episode starts in buffer: {total_episode_starts_in_buffer}")
+        
+        # 打印前5个时间步的 cost 和 episode_start 数据，以供抽查
+        print("    Sample Data (first 5 steps):")
+        for i in range(min(5, self.rollout_buffer.buffer_size)):
+            print(f"      Step {i}: costs={self.rollout_buffer.costs[i]}, starts={self.rollout_buffer.episode_starts[i]}")
+        print("="*50 + "\n")
+        # ======================= 诊断代码结束 =======================
+
         self._update_learning_rate(self.policy.optimizer)
         clip_range = self.clip_range(self._current_progress_remaining)
 
