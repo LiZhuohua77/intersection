@@ -1063,77 +1063,67 @@ class Road:
         pygame.draw.circle(surface, (255, 255, 255), (screen_x, screen_y), point_radius + 2, 2)
 
 
-    def _potential_func(self, u: float) -> float:
+    def _potential_func(self, sCTE: float) -> float:
         """
-        [新] 基于二次函数的势场计算。
-        在中心安全区内成本为0，离开安全区后成本随距离二次方增长。
+        [V2版] 基于有符号横向误差 (sCTE) 的非对称势场计算。
+        """
+        # --- 参数和逻辑与之前的 get_cost_from_sCTE 完全相同 ---
+        LANE_WIDTH = self.lane_width
+        SAFE_ZONE_WIDTH = 0.5
+        RIGHT_SIDE_PENALTY_FACTOR = 10.0
+        LEFT_SIDE_BASE_PENALTY = 100.0
+        LEFT_SIDE_GRADIENT_FACTOR = 30.0
 
-        参数:
-            u (float): 归一化的横向偏离距离。
-                       u=0: 在中心线; u=1: 在车道线。
-        返回:
-            float: 计算出的势能/成本值。
-        """
-        # --- 可调参数 ---
-        # 定义安全区的宽度。0.25意味着中心线左右各 0.25 * 半车道宽 (即1/8车道宽) 是0成本区。
-        # 如果车道宽4米，这里代表中心正负0.5米内成本为0。
-        SAFE_ZONE_RATIO = 0.25
+        cost = 0.0
+        abs_sCTE = abs(sCTE)
         
-        # 定义惩罚的严厉程度。这个值越大，成本增长越快。
-        PENALTY_FACTOR = 10.0
+        if abs_sCTE <= SAFE_ZONE_WIDTH:
+            cost = 0.0
+        elif sCTE > SAFE_ZONE_WIDTH:  # 危险的左侧
+            deviation = sCTE - SAFE_ZONE_WIDTH
+            cost = LEFT_SIDE_BASE_PENALTY + (deviation ** 2) * LEFT_SIDE_GRADIENT_FACTOR
+        elif sCTE < -SAFE_ZONE_WIDTH: # 相对安全的右侧
+            deviation = abs_sCTE - SAFE_ZONE_WIDTH
+            cost = (deviation ** 2) * RIGHT_SIDE_PENALTY_FACTOR
+            
+        return cost
 
-        if u <= SAFE_ZONE_RATIO:
-            # 在安全区内，成本为0
-            return 0.0
-        else:
-            # 在安全区外，成本按 (u - 安全区边界) 的平方增长
-            deviation = u - SAFE_ZONE_RATIO
-            return PENALTY_FACTOR * (deviation ** 2)
-
-    def get_potential_at_point(self, x, y, target_route_str=None):
+    # [核心修改] get_potential_at_point 现在计算并返回 sCTE
+    def _calculate_sCTE_at_point(self, x, y, target_route_str):
         """
-        计算世界坐标系中任意一点(x, y)的势能值
+        [新] 辅助函数，计算世界坐标点(x, y)相对于目标路径的sCTE。
+        这个逻辑是从 RLVehicle._calculate_signed_cross_track_error 移动过来的。
+        """
+        # 找到目标路径
+        route_data = self.routes.get(target_route_str)
+        if not route_data: return 0.0
+        path_points_np = np.array([p[:2] for p in route_data["smoothed"]])
         
-        Args:
-            x, y (float): 要计算势能的点坐标
-            target_route_str (str, optional): 目标路径标识符，如果指定则只考虑该路径
-            
-        Returns:
-            float: 该点的势能值，值越小表示该点越适合车辆行驶
-            
-        Notes:
-            1. 如指定路径，计算点到该路径中心线的最小距离
-            2. 如未指定，找到距离点最近的路径
-            3. 根据归一化的横向距离计算势能值
-        """
-        min_dist_to_centerline = float('inf')
-        is_inside = False
-
-        # ---- 选路径/算最近中心线距离逻辑 ----
-        if target_route_str and target_route_str in self.routes:
-            route_data = self.routes[target_route_str]
-            centerline_np = np.array([p[:2] for p in route_data["smoothed"]])
-            min_dist_to_centerline = np.min(
-                np.linalg.norm(centerline_np - np.array([x, y]), axis=1)
-            )
-            is_inside = min_dist_to_centerline <= self.lane_width / 2
+        current_pos = np.array([x, y])
+        
+        # 计算 sCTE 的逻辑...
+        distances_to_path = np.linalg.norm(path_points_np - current_pos, axis=1)
+        current_path_index = np.argmin(distances_to_path)
+        
+        if current_path_index < len(path_points_np) - 1:
+            p1 = path_points_np[current_path_index]
+            p2 = path_points_np[current_path_index + 1]
         else:
-            relevant_routes = []
-            for route_data in self.routes.values():
-                bbox = route_data.get("bbox")
-                if bbox and (bbox['min_x'] - 1 < x < bbox['max_x'] + 1 and 
-                             bbox['min_y'] - 1 < y < bbox['max_y'] + 1):
-                    relevant_routes.append(route_data)
-            if not relevant_routes:
-                relevant_routes = self.routes.values()
-            for route_data in relevant_routes:
-                centerline_np = np.array([p[:2] for p in route_data["smoothed"]])
-                dist = np.min(np.linalg.norm(centerline_np - np.array([x, y]), axis=1))
-                if dist < min_dist_to_centerline:
-                    min_dist_to_centerline = dist
-                    is_inside = dist <= self.lane_width / 2
+            p1 = path_points_np[current_path_index - 1]
+            p2 = path_points_np[current_path_index]
+            
+        path_to_point_vec = current_pos - p1
+        path_segment_vec = p2 - p1
+        
+        cross_product_z = path_segment_vec[0] * path_to_point_vec[1] - path_segment_vec[1] * path_to_point_vec[0]
+        
+        signed_error = np.sign(cross_product_z) * distances_to_path[current_path_index]
+        return signed_error
 
-        # --- 势能计算：normalized_lateral_dist 作为自变量 u ---
-        normalized_lateral_dist = min_dist_to_centerline / (self.lane_width / 2)
-        potential = self._potential_func(normalized_lateral_dist)
+    # [修改] get_potential_at_point 现在调用新的sCTE计算和新的potential函数
+    def get_potential_at_point(self, x, y, target_route_str):
+        # 1. 计算sCTE
+        sCTE = self._calculate_sCTE_at_point(x, y, target_route_str)
+        # 2. 用sCTE计算非对称势能
+        potential = self._potential_func(sCTE)
         return potential

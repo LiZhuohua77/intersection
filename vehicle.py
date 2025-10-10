@@ -1009,6 +1009,32 @@ class RLVehicle(Vehicle):
 
         return P_elec_kW
 
+    def _calculate_signed_cross_track_error(self):
+        """
+        计算有符号的横向跟踪误差 (sCTE)。
+        这个函数的具体实现，请参考我之前给出的版本。
+        确保 sCTE > 0 代表偏向危险的左侧（对向车道），sCTE < 0 代表偏向相对安全的右侧。
+        """
+        current_pos = np.array([self.state['x'], self.state['y']])
+        distances_to_path = np.linalg.norm(self.path_points_np - current_pos, axis=1)
+        current_path_index = np.argmin(distances_to_path)
+        
+        if current_path_index < len(self.path_points_np) - 1:
+            p1 = self.path_points_np[current_path_index]
+            p2 = self.path_points_np[current_path_index + 1]
+        else:
+            p1 = self.path_points_np[current_path_index - 1]
+            p2 = self.path_points_np[current_path_index]
+            
+        path_to_vehicle_vec = current_pos - p1
+        path_segment_vec = p2 - p1
+        
+        cross_product_z = path_segment_vec[0] * path_to_vehicle_vec[1] - path_segment_vec[1] * path_to_vehicle_vec[0]
+        
+        # 假设 cross_product_z > 0 是左侧 (危险)，您可能需要根据坐标系定义反转这里的 np.sign
+        signed_error = np.sign(cross_product_z) * distances_to_path[current_path_index]
+        return signed_error
+
     def calculate_reward(self, action, is_collision, is_baseline_agent):
         """
         计算当前状态下的奖励,在这里添加了某项奖励之后,去step函数的log_entry中增加相应的指标

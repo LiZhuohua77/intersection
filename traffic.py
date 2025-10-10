@@ -296,14 +296,9 @@ class TrafficManager:
             # 1a: 随机直行或右转
             routes = [
                 ('south', 'north'), ('north', 'south'), ('east', 'west'), ('west', 'east'),
-                ('south', 'east'), ('north', 'west'), ('east', 'north'), ('west', 'south')
+                ('south', 'east'), ('north', 'west'), ('east', 'north'), ('west', 'south'),
+                ('south', 'west'), ('west', 'north'), ('north', 'east'), ('east', 'south')
             ]
-            start_dir, end_dir = random.choice(routes)
-            agent = self.spawn_rl_agent(start_dir, end_dir)
-
-        elif scenario_name == "agent_only_left_turn":
-            # 1b: 随机左转
-            routes = [('south', 'west'), ('west', 'north'), ('north', 'east'), ('east', 'south')]
             start_dir, end_dir = random.choice(routes)
             agent = self.spawn_rl_agent(start_dir, end_dir)
 
