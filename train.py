@@ -86,8 +86,8 @@ def parse_args():
     parser.add_argument("--n-envs", type=int, default=1, help="Number of parallel environments to use for training.")
     
     # --- 训练过程参数 ---
-    parser.add_argument("--total-timesteps", type=int, default=8000000, help="Total timesteps to train the agent.")
-    parser.add_argument("--save-freq", type=int, default=1000000, help="Save a checkpoint every N timesteps.")
+    parser.add_argument("--total-timesteps", type=int, default=8_000_000, help="Total timesteps to train the agent.")
+    parser.add_argument("--save-freq", type=int, default=1_000_000, help="Save a checkpoint every N timesteps.")
 
     parser.add_argument("--n-steps", type=int, default=2048, help="Num steps to run for each env per rollout (buffer size).")
     parser.add_argument("--batch-size", type=int, default=64, help="Minibatch size for each update.")
@@ -101,7 +101,9 @@ def parse_args():
     parser.add_argument("--hidden-dim", type=int, default=256, help="Dimension of the hidden layers.")
     parser.add_argument("--rnn-hidden-dim", type=int, default=64, help="Dimension of the GRU hidden layers for trajectory encoding.")
 
-    parser.add_argument("--cost-limit", type=float, default=30.0, help="Cost limit 'd' for SAGI-PPO.")
+    parser.add_argument("--initial-cost-limit", type=float, default=100.0, help="Initial cost limit for annealing.")
+    parser.add_argument("--final-cost-limit", type=float, default=25.0, help="Final cost limit after decay.")
+    parser.add_argument("--cost-limit-decay-steps", type=int, default=2_000_000, help="Timesteps over which to decay the cost limit.")
     parser.add_argument("--lambda-lr", type=float, default=0.035, help="Learning rate for the Lagrange multiplier lambda.")
     parser.add_argument("--cost-vf-coef", type=float, default=0.5, help="Coefficient for the cost value function loss.")
         
@@ -194,7 +196,9 @@ def main():
                 env,
                 policy_kwargs=policy_kwargs,
                 # SAGI-PPO 专属参数
-                cost_limit=args.cost_limit,
+                initial_cost_limit=args.initial_cost_limit,
+                final_cost_limit=args.final_cost_limit,
+                cost_limit_decay_steps=args.cost_limit_decay_steps,
                 lambda_lr=args.lambda_lr,
                 cost_vf_coef=args.cost_vf_coef,
                 # 标准 PPO 参数

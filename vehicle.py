@@ -1135,8 +1135,8 @@ class RLVehicle(Vehicle):
         #print(f"Raw action from network: accel={action[0]:.2f}, steer={action[1]:.2f}")
         # 1. 解读并执行动作
         acceleration = action[0] * MAX_ACCELERATION
-        #steering_angle = action[1] * MAX_STEERING_ANGLE
-        steering_angle = action[1] * 0.1
+        steering_angle = action[1] * MAX_STEERING_ANGLE
+        #steering_angle = action[1] * 0
         self._update_physics(acceleration * self.m, steering_angle, dt)
         
         self.state['vx'] = max(0, min(self.state['vx'], 15))

@@ -72,7 +72,7 @@ def parse_args():
         --seed: 随机种子，用于确保实验可重复性
     """
     parser = argparse.ArgumentParser(description="Evaluate a trained PPO/SAGI-PPO agent against different driver types.")
-    parser.add_argument("--algo", type=str, default="ppo_gru",
+    parser.add_argument("--algo", type=str, default="sagi_ppo_gru",
                         choices=["sagi_ppo_mlp", "sagi_ppo_gru", "ppo_gru", "ppo_mlp"], 
                         help="The algorithm of the trained agent to evaluate.")
     parser.add_argument("--model_path", type=str, default="D:/Code/intersection/models/sagi_ppo_gru_final_model.zip",

@@ -140,8 +140,13 @@ class SAGIRolloutBuffer(RolloutBuffer):
 class SAGIPPO(PPO):
     policy_aliases: Dict[str, Type[ActorCriticPolicy]] = { "MlpPolicy": ActorCriticCostPolicy }
 
-    def __init__(self, policy, env, cost_limit: float = 25.0, lambda_lr: float = 0.035, cost_vf_coef: float = 0.5, **kwargs):
-        self.cost_limit = cost_limit
+    def __init__(self, policy, env, initial_cost_limit: float = 100.0, final_cost_limit: float = 25.0,
+                 cost_limit_decay_steps: int = 3_000_000, lambda_lr: float = 0.035, cost_vf_coef: float = 0.5, **kwargs):
+        
+        self.initial_cost_limit = initial_cost_limit
+        self.final_cost_limit = final_cost_limit
+        self.cost_limit_decay_steps = cost_limit_decay_steps        
+        self.cost_limit = initial_cost_limit
         self.lambda_lr = lambda_lr
         self.cost_vf_coef = cost_vf_coef
         self.lambda_ = 0.0
@@ -154,25 +159,20 @@ class SAGIPPO(PPO):
         从根源上解决反复出现的形状不匹配问题。
         """
         self.policy.set_training_mode(True)
-
-        # ======================= 在这里插入深度诊断代码 =======================
-        total_costs_in_buffer = np.sum(self.rollout_buffer.costs)
-        total_episode_starts_in_buffer = np.sum(self.rollout_buffer.episode_starts)
-        
-        print("\n" + "="*50)
-        print("🔍 Deep Dive Buffer Inspection")
-        print(f"    Buffer Shape (Steps, Envs): {self.rollout_buffer.costs.shape}")
-        print(f"    Total costs in buffer: {total_costs_in_buffer}")
-        print(f"    Total episode starts in buffer: {total_episode_starts_in_buffer}")
-        
-        # 打印前5个时间步的 cost 和 episode_start 数据，以供抽查
-        print("    Sample Data (first 5 steps):")
-        for i in range(min(5, self.rollout_buffer.buffer_size)):
-            print(f"      Step {i}: costs={self.rollout_buffer.costs[i]}, starts={self.rollout_buffer.episode_starts[i]}")
-        print("="*50 + "\n")
-        # ======================= 诊断代码结束 =======================
-
         self._update_learning_rate(self.policy.optimizer)
+        # ==================== 动态 Cost Limit 计算 ====================
+        # self.num_timesteps 是当前已经过的总步数
+        progress_ratio = min(1.0, self.num_timesteps / self.cost_limit_decay_steps)
+        
+        current_cost_limit = self.initial_cost_limit - progress_ratio * (self.initial_cost_limit - self.final_cost_limit)
+        
+        # 确保 cost_limit 不会低于最终值
+        current_cost_limit = max(current_cost_limit, self.final_cost_limit)
+
+        # 更新 cost_limit 并记录到 TensorBoard
+        self.cost_limit = current_cost_limit
+        self.logger.record("sagi/current_cost_limit", self.cost_limit)
+        # ===============================================================
         clip_range = self.clip_range(self._current_progress_remaining)
 
         j_c_k = self.rollout_buffer.get_mean_episode_costs()
