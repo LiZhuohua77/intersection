@@ -1065,28 +1065,32 @@ class Road:
 
     def _potential_func(self, sCTE: float) -> float:
         """
-        [V2版] 基于有符号横向误差 (sCTE) 的非对称势场计算。
+        [最终修正版] 基于有符号横向误差 (sCTE) 的、连续的、非对称势场。
         """
-        # --- 参数和逻辑与之前的 get_cost_from_sCTE 完全相同 ---
-        LANE_WIDTH = self.lane_width
-        SAFE_ZONE_WIDTH = 0.5
-        RIGHT_SIDE_PENALTY_FACTOR = 10.0
-        LEFT_SIDE_BASE_PENALTY = 100.0
-        LEFT_SIDE_GRADIENT_FACTOR = 30.0
+        # --- 可调参数 ---
+        # 安全区宽度。例如，0.25 * self.lane_width 意味着中心正负半米是0成本区。
+        SAFE_ZONE_WIDTH = 0.25 * self.lane_width 
+        
+        # [核心] 定义非对称的惩罚系数（斜率）
+        LEFT_PENALTY_FACTOR = 10.0  # 偏向左侧（危险）的惩罚系数 (更严厉)
+        RIGHT_PENALTY_FACTOR = 3.0   # 偏向右侧（相对安全）的惩罚系数 (较宽松)
 
-        cost = 0.0
         abs_sCTE = abs(sCTE)
         
+        # 1. 检查是否在安全区内
         if abs_sCTE <= SAFE_ZONE_WIDTH:
-            cost = 0.0
-        elif sCTE > SAFE_ZONE_WIDTH:  # 危险的左侧
-            deviation = sCTE - SAFE_ZONE_WIDTH
-            cost = LEFT_SIDE_BASE_PENALTY + (deviation ** 2) * LEFT_SIDE_GRADIENT_FACTOR
-        elif sCTE < -SAFE_ZONE_WIDTH: # 相对安全的右侧
-            deviation = abs_sCTE - SAFE_ZONE_WIDTH
-            cost = (deviation ** 2) * RIGHT_SIDE_PENALTY_FACTOR
-            
-        return cost
+            return 0.0
+        
+        # 2. 计算偏离出安全区的距离
+        deviation = abs_sCTE - SAFE_ZONE_WIDTH
+        
+        # 3. 根据偏离方向（sCTE的符号），应用不同的惩罚系数
+        if sCTE > 0:  # 偏向左侧 (sCTE 为正)
+            # 使用更严厉的左侧惩罚系数
+            return LEFT_PENALTY_FACTOR * (deviation ** 2)
+        else:  # 偏向右侧 (sCTE 为负)
+            # 使用较宽松的右侧惩罚系数
+            return RIGHT_PENALTY_FACTOR * (deviation ** 2)
 
     # [核心修改] get_potential_at_point 现在计算并返回 sCTE
     def _calculate_sCTE_at_point(self, x, y, target_route_str):

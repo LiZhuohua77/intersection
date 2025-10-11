@@ -101,9 +101,7 @@ def parse_args():
     parser.add_argument("--hidden-dim", type=int, default=256, help="Dimension of the hidden layers.")
     parser.add_argument("--rnn-hidden-dim", type=int, default=64, help="Dimension of the GRU hidden layers for trajectory encoding.")
 
-    parser.add_argument("--initial-cost-limit", type=float, default=100.0, help="Initial cost limit for annealing.")
-    parser.add_argument("--final-cost-limit", type=float, default=25.0, help="Final cost limit after decay.")
-    parser.add_argument("--cost-limit-decay-steps", type=int, default=2_000_000, help="Timesteps over which to decay the cost limit.")
+    parser.add_argument("--cost-limit", type=float, default=500.0, help="Cost limit 'd' for SAGI-PPO.")
     parser.add_argument("--lambda-lr", type=float, default=0.035, help="Learning rate for the Lagrange multiplier lambda.")
     parser.add_argument("--cost-vf-coef", type=float, default=0.5, help="Coefficient for the cost value function loss.")
         

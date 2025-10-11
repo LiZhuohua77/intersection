@@ -140,13 +140,9 @@ class SAGIRolloutBuffer(RolloutBuffer):
 class SAGIPPO(PPO):
     policy_aliases: Dict[str, Type[ActorCriticPolicy]] = { "MlpPolicy": ActorCriticCostPolicy }
 
-    def __init__(self, policy, env, initial_cost_limit: float = 100.0, final_cost_limit: float = 25.0,
-                 cost_limit_decay_steps: int = 3_000_000, lambda_lr: float = 0.035, cost_vf_coef: float = 0.5, **kwargs):
+    def __init__(self, policy, env, cost_limit: float = 25.0, lambda_lr: float = 0.035, cost_vf_coef: float = 0.5, **kwargs):
         
-        self.initial_cost_limit = initial_cost_limit
-        self.final_cost_limit = final_cost_limit
-        self.cost_limit_decay_steps = cost_limit_decay_steps        
-        self.cost_limit = initial_cost_limit
+        self.cost_limit = cost_limit
         self.lambda_lr = lambda_lr
         self.cost_vf_coef = cost_vf_coef
         self.lambda_ = 0.0
@@ -160,19 +156,6 @@ class SAGIPPO(PPO):
         """
         self.policy.set_training_mode(True)
         self._update_learning_rate(self.policy.optimizer)
-        # ==================== 动态 Cost Limit 计算 ====================
-        # self.num_timesteps 是当前已经过的总步数
-        progress_ratio = min(1.0, self.num_timesteps / self.cost_limit_decay_steps)
-        
-        current_cost_limit = self.initial_cost_limit - progress_ratio * (self.initial_cost_limit - self.final_cost_limit)
-        
-        # 确保 cost_limit 不会低于最终值
-        current_cost_limit = max(current_cost_limit, self.final_cost_limit)
-
-        # 更新 cost_limit 并记录到 TensorBoard
-        self.cost_limit = current_cost_limit
-        self.logger.record("sagi/current_cost_limit", self.cost_limit)
-        # ===============================================================
         clip_range = self.clip_range(self._current_progress_remaining)
 
         j_c_k = self.rollout_buffer.get_mean_episode_costs()
