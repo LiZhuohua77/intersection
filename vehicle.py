@@ -712,7 +712,7 @@ class RLVehicle(Vehicle):
     def __init__(self, road, start_direction, end_direction, vehicle_id):
         super().__init__(road, start_direction, end_direction, vehicle_id)
         
-        self.target_route_str = f"{start_direction}_{end_direction}"
+        self.target_route_str = f"{start_direction[0].upper()}_{end_direction[0].upper()}"
 
         # 禁用基于规则的控制器
         self.planner = None

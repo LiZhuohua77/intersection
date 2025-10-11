@@ -1095,20 +1095,25 @@ class Road:
     # [核心修改] get_potential_at_point 现在计算并返回 sCTE
     def _calculate_sCTE_at_point(self, x, y, target_route_str):
         """
-        [新] 辅助函数，计算世界坐标点(x, y)相对于目标路径的sCTE。
-        这个逻辑是从 RLVehicle._calculate_signed_cross_track_error 移动过来的。
+        [带诊断功能的版本]
+        计算sCTE，并打印所有内部变量以供调试。
         """
-        # 找到目标路径
+        # 1. 检查路径数据
         route_data = self.routes.get(target_route_str)
-        if not route_data: return 0.0
+        if not route_data:
+            return 0.0
+        
         path_points_np = np.array([p[:2] for p in route_data["smoothed"]])
-        
+        if len(path_points_np) < 2:
+            return 0.0
+
+        # 2. 计算最近点
         current_pos = np.array([x, y])
-        
-        # 计算 sCTE 的逻辑...
         distances_to_path = np.linalg.norm(path_points_np - current_pos, axis=1)
+        min_distance = np.min(distances_to_path)
         current_path_index = np.argmin(distances_to_path)
-        
+
+        # 3. 定义路径段
         if current_path_index < len(path_points_np) - 1:
             p1 = path_points_np[current_path_index]
             p2 = path_points_np[current_path_index + 1]
@@ -1116,12 +1121,15 @@ class Road:
             p1 = path_points_np[current_path_index - 1]
             p2 = path_points_np[current_path_index]
             
+        # 4. 计算向量
         path_to_point_vec = current_pos - p1
         path_segment_vec = p2 - p1
-        
+
+        # 5. 计算叉乘
         cross_product_z = path_segment_vec[0] * path_to_point_vec[1] - path_segment_vec[1] * path_to_point_vec[0]
         
-        signed_error = np.sign(cross_product_z) * distances_to_path[current_path_index]
+        # 6. 计算最终结果
+        signed_error = np.sign(cross_product_z) * min_distance
         return signed_error
 
     # [修改] get_potential_at_point 现在调用新的sCTE计算和新的potential函数

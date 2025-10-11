@@ -194,9 +194,7 @@ def main():
                 env,
                 policy_kwargs=policy_kwargs,
                 # SAGI-PPO 专属参数
-                initial_cost_limit=args.initial_cost_limit,
-                final_cost_limit=args.final_cost_limit,
-                cost_limit_decay_steps=args.cost_limit_decay_steps,
+                cost_limit=args.cost_limit,
                 lambda_lr=args.lambda_lr,
                 cost_vf_coef=args.cost_vf_coef,
                 # 标准 PPO 参数
