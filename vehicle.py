@@ -1036,82 +1036,72 @@ class RLVehicle(Vehicle):
         return signed_error
 
     def calculate_reward(self, action, is_collision, is_baseline_agent):
-        """
-        计算当前状态下的奖励,在这里添加了某项奖励之后,去step函数的log_entry中增加相应的指标
-        """
-        # --- 建议的权重参数 ---
-        #W_PROGRESS = 4       # 进度奖励权重
-        W_VELOCITY = 8         # 速度跟踪奖励权重
-        VELOCITY_STD = 5  
-        W_TIME = -0            # 时间惩罚 (每步-0.2分)
-        W_ACTION_SMOOTH = -1   # 动作平滑度惩罚权重
-        W_ENERGY = -0.01        # 能量消耗惩罚权重
-        R_SUCCESS = 50.0        # 成功奖励
-        R_COLLISION = -50.0     # 碰撞惩罚
-        W_COST_PENALTY = -1.5   # (仅用于PPO baseline) 成本惩罚权重
+        # --- 经过重新平衡的权重 ---
+        W_VELOCITY = 4.0          # 速度奖励权重（适当降低）
+        VELOCITY_STD = 5.0
+        W_TIME = -0.1             # [关键] 必须设置一个负值，制造紧迫感
+        W_ACTION_SMOOTH = -0.5    # 动作平滑度惩罚
+        W_ENERGY = -0.01          # 能量消耗惩罚
+        R_SUCCESS = 100.0         # 成功时给予巨大奖励
+        R_COLLISION = -100.0        # 碰撞时给予巨大惩罚
 
-
-
-        # 期望速度，可以设为道路限速
+        # 期望速度
         DESIRED_VELOCITY = 15.0
 
-        # --- 1. 创建一个字典来存储所有奖励分量 ---
         reward_components = {}
 
-        # --- 2. 计算各个基础奖励分量 ---
-        #行驶进度奖励 (Progress Reward)
-        current_longitudinal_pos = self.get_current_longitudinal_pos()
-        progress = current_longitudinal_pos - self.last_longitudinal_pos
-        #reward_components['progress'] = W_PROGRESS * progress
-        # 效率奖励 (核心修改)
+        # --- 速度奖励 ---
         current_speed = self.state['vx']
         velocity_diff_sq = (current_speed - DESIRED_VELOCITY)**2
         reward_components['velocity_tracking'] = W_VELOCITY * np.exp(-velocity_diff_sq / (2 * VELOCITY_STD**2))
 
-        W_PATH = 1.5       # 路径跟踪奖励的整体权重
-        ALPHA = 0.3       # 横向误差的敏感度系数 (调小以适应更大误差范围)
-        BETA = 0.5         # 航向误差的敏感度系数
-
+        # --- 路径跟踪奖励 (核心修改) ---
+        W_PATH = 1.0              # 路径跟踪权重
+        ALPHA = 1.0               # [关键] 横向误差敏感度 (从5.0大幅降低到0.5，拓宽“甜点区”)
+        BETA = 0.5                # 航向误差敏感度
+        
         cte_sq = self.cross_track_error**2
         he_sq = self.heading_error**2
-
-        # 只有当误差同时很小时，这个奖励才高。任何一项误差很大，奖励都趋近于0。
         path_reward = W_PATH * np.exp(-(ALPHA * cte_sq + BETA * he_sq))
         reward_components['path_following'] = path_reward
         
-        # 时间惩罚，鼓励车辆尽快完成任务
+        # --- 增加一个与速度相关的转弯惩罚 ---
+        # 目标：在转弯时（he_sq大），如果速度（current_speed）还很快，就给予惩罚
+        # 这比之前只用 he_sq 更精准
+        TURN_PENALTY_FACTOR = -0.2 # 惩罚系数
+        turn_penalty = TURN_PENALTY_FACTOR * he_sq * current_speed
+        reward_components['turn_penalty'] = turn_penalty
+
+        # --- 时间惩罚 ---
         reward_components['time_penalty'] = W_TIME
         
-        # 舒适性奖励
+        # --- 其他惩罚项 ---
         action_diff = action - self.last_action
         smoothness_penalty = np.sum(action_diff**2)
         reward_components['action_smoothness'] = W_ACTION_SMOOTH * smoothness_penalty
 
         acceleration = action[0] * MAX_ACCELERATION
         power_consumption = self._calculate_energy_consumption(acceleration)
-        # 注意：对于再生制动，power_consumption 可能为负值，这会给予奖励而非惩罚
-        # 如果要考虑绝对能耗（不管正负），可以使用 abs(power_consumption)
         reward_components['energy_consumption'] = W_ENERGY * power_consumption
 
-        # --- 3. 处理PPO基准的成本惩罚 ---
+        # --- PPO基准的成本惩罚 ---
         if is_baseline_agent:
             cost = self.calculate_cost()
-            reward_components['cost_penalty'] = W_COST_PENALTY * cost
+            reward_components['cost_penalty'] = -1.5 * cost
         else:
-            cost = self.calculate_cost()
             reward_components['cost_penalty'] = 0
 
-        # --- 4. 计算步进奖励的总和 ---
+        # --- 计算总奖励 ---
         total_reward = sum(reward_components.values())
 
-        # --- 5. 根据终局状态，覆盖奖励值 ---
+        # --- 终局奖励 ---
+        # 使用直接赋值，让终局信号更强烈
         if is_collision:
-            total_reward += R_COLLISION #这里本来是直接等于R_COLLISION 但是感觉不太对 如果后面训练不出来的话再改回 total_reward = R_COLLISION
+            total_reward = R_COLLISION
         if self.completed:
-            total_reward += R_SUCCESS 
+            total_reward = R_SUCCESS
             
         reward_components['total_reward'] = total_reward
-        
         return reward_components
 
     def calculate_cost(self):
