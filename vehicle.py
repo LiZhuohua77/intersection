@@ -859,14 +859,15 @@ class RLVehicle(Vehicle):
         current_pos = np.array([self.state['x'], self.state['y']])
         distances_to_path = np.linalg.norm(self.path_points_np - current_pos, axis=1)
         current_path_index = np.argmin(distances_to_path)
-        self.cross_track_error = distances_to_path[current_path_index]
+        self.signed_cross_track_error = self._calculate_signed_cross_track_error()
+        self.cross_track_error = abs(self.signed_cross_track_error)
         path_angle = self.reference_path[current_path_index][2]
         self.heading_error = (self.state['psi'] - path_angle + np.pi) % (2 * np.pi) - np.pi
         path_completion = self.get_current_longitudinal_pos() / self.path_distances[-1]
         
         return [
             ego_vx_norm, ego_vy_norm, ego_psi_dot_norm,
-            np.tanh(self.cross_track_error / MAX_RELEVANT_CTE),
+            np.tanh(self.signed_cross_track_error / MAX_RELEVANT_CTE),
             self.heading_error / np.pi,
             path_completion
         ]
@@ -1033,7 +1034,7 @@ class RLVehicle(Vehicle):
         
         # 假设 cross_product_z > 0 是左侧 (危险)，您可能需要根据坐标系定义反转这里的 np.sign
         signed_error = np.sign(cross_product_z) * distances_to_path[current_path_index]
-        return signed_error
+        return -signed_error
 
     def calculate_reward(self, action, is_collision, is_baseline_agent):
         # --- 经过重新平衡的权重 ---
@@ -1059,8 +1060,8 @@ class RLVehicle(Vehicle):
         W_PATH = 1.0              # 路径跟踪权重
         ALPHA = 1.0               # [关键] 横向误差敏感度 (从5.0大幅降低到0.5，拓宽“甜点区”)
         BETA = 0.5                # 航向误差敏感度
-        
-        cte_sq = self.cross_track_error**2
+
+        cte_sq = self.signed_cross_track_error**2
         he_sq = self.heading_error**2
         path_reward = W_PATH * np.exp(-(ALPHA * cte_sq + BETA * he_sq))
         reward_components['path_following'] = path_reward

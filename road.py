@@ -1072,7 +1072,7 @@ class Road:
         SAFE_ZONE_WIDTH = 0.25 * self.lane_width 
         
         # [核心] 定义非对称的惩罚系数（斜率）
-        LEFT_PENALTY_FACTOR = 10.0  # 偏向左侧（危险）的惩罚系数 (更严厉)
+        LEFT_PENALTY_FACTOR = 50.0  # 偏向左侧（危险）的惩罚系数 (更严厉)
         RIGHT_PENALTY_FACTOR = 3.0   # 偏向右侧（相对安全）的惩罚系数 (较宽松)
 
         abs_sCTE = abs(sCTE)
@@ -1130,7 +1130,7 @@ class Road:
         
         # 6. 计算最终结果
         signed_error = np.sign(cross_product_z) * min_distance
-        return signed_error
+        return -signed_error
 
     # [修改] get_potential_at_point 现在调用新的sCTE计算和新的potential函数
     def get_potential_at_point(self, x, y, target_route_str):
