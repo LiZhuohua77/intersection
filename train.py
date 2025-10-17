@@ -101,7 +101,9 @@ def parse_args():
     parser.add_argument("--hidden-dim", type=int, default=256, help="Dimension of the hidden layers.")
     parser.add_argument("--rnn-hidden-dim", type=int, default=64, help="Dimension of the GRU hidden layers for trajectory encoding.")
 
-    parser.add_argument("--cost-limit", type=float, default=500.0, help="Cost limit 'd' for SAGI-PPO.")
+    parser.add_argument("--initial-cost-limit", type=float, default=500.0, help="Initial (high) cost limit for annealing.")
+    parser.add_argument("--final-cost-limit", type=float, default=30.0, help="Final (target) cost limit after decay.")
+    parser.add_argument("--decay-start-step", type=int, default=5_000_000, help="Timestep at which the cost limit decay begins.")
     parser.add_argument("--lambda-lr", type=float, default=0.035, help="Learning rate for the Lagrange multiplier lambda.")
     parser.add_argument("--cost-vf-coef", type=float, default=0.5, help="Coefficient for the cost value function loss.")
         
@@ -194,7 +196,9 @@ def main():
                 env,
                 policy_kwargs=policy_kwargs,
                 # SAGI-PPO 专属参数
-                cost_limit=args.cost_limit,
+                initial_cost_limit=args.initial_cost_limit,
+                final_cost_limit=args.final_cost_limit,
+                decay_start_step=args.decay_start_step,
                 lambda_lr=args.lambda_lr,
                 cost_vf_coef=args.cost_vf_coef,
                 # 标准 PPO 参数

@@ -140,12 +140,19 @@ class SAGIRolloutBuffer(RolloutBuffer):
 class SAGIPPO(PPO):
     policy_aliases: Dict[str, Type[ActorCriticPolicy]] = { "MlpPolicy": ActorCriticCostPolicy }
 
-    def __init__(self, policy, env, cost_limit: float = 25.0, lambda_lr: float = 0.035, cost_vf_coef: float = 0.5, **kwargs):
-        
-        self.cost_limit = cost_limit
+    def __init__(self, policy, env, 
+                 initial_cost_limit: float = 500.0,
+                 final_cost_limit: float = 30.0,
+                 decay_start_step: int = 5_000_000, 
+                 lambda_lr: float = 0.035, cost_vf_coef: float = 0.5, **kwargs):
+
+        self.initial_cost_limit = initial_cost_limit
+        self.final_cost_limit = final_cost_limit
+        self.decay_start_step = decay_start_step
         self.lambda_lr = lambda_lr
         self.cost_vf_coef = cost_vf_coef
         self.lambda_ = 0.0
+        self.cost_limit = self.initial_cost_limit
         super().__init__(policy=policy, env=env, rollout_buffer_class=SAGIRolloutBuffer, **kwargs)
 
     def train(self) -> None:
@@ -156,6 +163,28 @@ class SAGIPPO(PPO):
         """
         self.policy.set_training_mode(True)
         self._update_learning_rate(self.policy.optimizer)
+        # ==================== [新增] 非线性成本限制退火逻辑 ====================
+        current_step = self.num_timesteps
+        decay_start = self.decay_start_step
+        total_steps = self._total_timesteps  # 从 PPO 基类获取总训练步数
+
+        if current_step <= decay_start:
+            # 阶段一：在衰减开始前，保持高的初始值
+            current_cost_limit = self.initial_cost_limit
+        else:
+            # 阶段二：在衰减阶段，进行线性插值
+            # 计算在衰减阶段的进度比例 (从 0.0 到 1.0)
+            progress_in_decay_phase = (current_step - decay_start) / max(1, total_steps - decay_start)
+            progress_in_decay_phase = min(1.0, progress_in_decay_phase)  # 确保不超过1.0
+            
+            # 从 initial_cost_limit 线性插值到 final_cost_limit
+            current_cost_limit = self.initial_cost_limit + progress_in_decay_phase * (self.final_cost_limit - self.initial_cost_limit)
+        
+        # 更新 self.cost_limit 并记录到 TensorBoard
+        self.cost_limit = current_cost_limit
+        self.logger.record("sagi/current_cost_limit", self.cost_limit)
+        # =====================================================================
+
         clip_range = self.clip_range(self._current_progress_remaining)
 
         j_c_k = self.rollout_buffer.get_mean_episode_costs()
