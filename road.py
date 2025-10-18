@@ -1064,33 +1064,31 @@ class Road:
 
 
     def _potential_func(self, sCTE: float) -> float:
-        """
-        [最终修正版] 基于有符号横向误差 (sCTE) 的、连续的、非对称势场。
-        """
-        # --- 可调参数 ---
-        # 安全区宽度。例如，0.25 * self.lane_width 意味着中心正负半米是0成本区。
-        SAFE_ZONE_WIDTH = 0.25 * self.lane_width 
-        
-        # [核心] 定义非对称的惩罚系数（斜率）
-        LEFT_PENALTY_FACTOR = 50.0  # 偏向左侧（危险）的惩罚系数 (更严厉)
-        RIGHT_PENALTY_FACTOR = 3.0   # 偏向右侧（相对安全）的惩罚系数 (较宽松)
+        # ... 您现有的参数定义 ...
+        SAFE_ZONE_WIDTH = 0.5 * self.lane_width 
+        LEFT_PENALTY_FACTOR = 50.0
+        RIGHT_PENALTY_FACTOR = 3.0
+
+        # ==================== [核心修正：成本熔断] ====================
+        # 设定一个合理的单步成本上限。这个值已经足够“痛”了。
+        MAX_STEP_COST = 20.0 
+        # ==========================================================
 
         abs_sCTE = abs(sCTE)
         
-        # 1. 检查是否在安全区内
         if abs_sCTE <= SAFE_ZONE_WIDTH:
             return 0.0
         
-        # 2. 计算偏离出安全区的距离
         deviation = abs_sCTE - SAFE_ZONE_WIDTH
         
-        # 3. 根据偏离方向（sCTE的符号），应用不同的惩罚系数
-        if sCTE > 0:  # 偏向左侧 (sCTE 为正)
-            # 使用更严厉的左侧惩罚系数
-            return LEFT_PENALTY_FACTOR * (deviation ** 2)
-        else:  # 偏向右侧 (sCTE 为负)
-            # 使用较宽松的右侧惩罚系数
-            return RIGHT_PENALTY_FACTOR * (deviation ** 2)
+        cost = 0.0
+        if sCTE > 0:
+            cost = LEFT_PENALTY_FACTOR * deviation
+        else:
+            cost = RIGHT_PENALTY_FACTOR * deviation
+            
+        # [核心修正] 在返回前，应用熔断机制
+        return min(cost, MAX_STEP_COST)
 
     # [核心修改] get_potential_at_point 现在计算并返回 sCTE
     def _calculate_sCTE_at_point(self, x, y, target_route_str):

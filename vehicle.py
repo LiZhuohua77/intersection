@@ -1041,7 +1041,7 @@ class RLVehicle(Vehicle):
         W_VELOCITY = 4.0          # 速度奖励权重（适当降低）
         VELOCITY_STD = 5.0
         W_TIME = -0.1             # [关键] 必须设置一个负值，制造紧迫感
-        W_ACTION_SMOOTH = -0.5    # 动作平滑度惩罚
+        W_ACTION_SMOOTH = -1    # 动作平滑度惩罚
         W_ENERGY = -0.01          # 能量消耗惩罚
         R_SUCCESS = 100.0         # 成功时给予巨大奖励
         R_COLLISION = -100.0        # 碰撞时给予巨大惩罚
@@ -1058,7 +1058,7 @@ class RLVehicle(Vehicle):
 
         # --- 路径跟踪奖励 (核心修改) ---
         W_PATH = 1.0              # 路径跟踪权重
-        ALPHA = 1.0               # [关键] 横向误差敏感度 (从5.0大幅降低到0.5，拓宽“甜点区”)
+        ALPHA = 0.5               # [关键] 横向误差敏感度 (从5.0大幅降低到0.5，拓宽“甜点区”)
         BETA = 0.5                # 航向误差敏感度
 
         cte_sq = self.signed_cross_track_error**2
@@ -1069,7 +1069,7 @@ class RLVehicle(Vehicle):
         # --- 增加一个与速度相关的转弯惩罚 ---
         # 目标：在转弯时（he_sq大），如果速度（current_speed）还很快，就给予惩罚
         # 这比之前只用 he_sq 更精准
-        TURN_PENALTY_FACTOR = -0.2 # 惩罚系数
+        TURN_PENALTY_FACTOR = -0.5 # 惩罚系数
         turn_penalty = TURN_PENALTY_FACTOR * he_sq * current_speed
         reward_components['turn_penalty'] = turn_penalty
 
