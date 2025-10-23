@@ -35,6 +35,24 @@ class IDM:
         self.s0 = params['s0']  # 最小安全车头间距 (m)
         self.delta = 4.0        # 加速指数 (通常固定为4)
 
+# ==================== [新增方法] ====================
+    def update_parameters(self, params: dict):
+        """
+        允许在初始化后更新IDM模型的参数。
+        主要用于课程学习中动态调整期望速度 v0。
+        """
+        # 使用 .get(key, self.existing_value) 来确保只更新传入字典中存在的键
+        self.v0 = params.get('v0', self.v0)
+        self.T = params.get('T', self.T)
+        self.a = params.get('a', self.a)
+        self.b = params.get('b', self.b)
+        self.s0 = params.get('s0', self.s0)
+        # delta 通常不需要更新
+        
+        # (可选) 添加一个打印语句，方便调试确认参数已更新
+        # print(f"  -> IDM parameters updated: New v0 = {self.v0:.2f}") 
+    # ====================================================
+
     def _calculate_idm_accel(self, v: float, delta_v: float, s: float) -> float:
         """
         IDM核心加速度计算公式的私有辅助函数。

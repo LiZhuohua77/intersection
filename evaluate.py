@@ -75,9 +75,9 @@ def parse_args():
     parser.add_argument("--algo", type=str, default="sagi_ppo_gru",
                         choices=["sagi_ppo_mlp", "sagi_ppo_gru", "ppo_gru", "ppo_mlp"], 
                         help="The algorithm of the trained agent to evaluate.")
-    parser.add_argument("--model_path", type=str, default="D:/Code/intersection/models/sagi_ppo_gru_checkpoint_30019200_steps.zip",
+    parser.add_argument("--model_path", type=str, default="D:/Code/intersection/models/sagi_ppo_gru_final_model.zip",
                         help="Path to the saved model .zip file (e.g., 'models/final_model.zip').")
-    parser.add_argument("--num-episodes-per-driver", type=int, default=5,
+    parser.add_argument("--num-episodes-per-driver", type=int, default=3,
                         help="Number of episodes to run for EACH driver type for evaluation.")
     parser.add_argument("--seed", type=int, default=8491,
                         help="Random seed for reproducibility. (8491 for aggressive, 233 for conservative)")
@@ -108,10 +108,15 @@ def main():
     
     # --- 2. 创建环境和游戏引擎 ---
     # 初始场景可以设置为一个通用值，后续在reset中动态指定
-    env = TrafficEnv(scenario='cooperative_yield')
+    env = TrafficEnv(scenario='random_traffic')
     env.reset(seed=args.seed)
     
     game_engine = GameEngine(width=800, height=800)
+
+    if hasattr(env, 'traffic_manager') and hasattr(env.traffic_manager, 'set_hv_speed_scaling'):
+            env.traffic_manager.set_hv_speed_scaling(1.0) 
+    else:
+        print("警告：无法在TrafficManager中找到set_hv_speed_scaling方法。HV速度可能不正确。")
 
     model = None
     print(f"--- Loading {args.algo.upper()} Agent from {args.model_path} ---")
@@ -170,12 +175,12 @@ def main():
                 total_episode_counter += 1
                 # [MODIFIED] 在 reset 时传入驾驶员配置
                 reset_options = {
-                    'scenario': 'agent_only_simple', 
+                    'scenario': 'random_traffic', 
                     'algo': args.algo,
                     'hv_personality': personality,
                     'hv_intent': intent
                 }
-                state, info = env.reset(options=reset_options)
+                state, info = env.reset(seed=args.seed + total_episode_counter, options=reset_options)
                 
                 episode_reward, episode_cost, episode_len = 0, 0, 0
 

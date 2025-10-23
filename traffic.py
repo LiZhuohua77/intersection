@@ -44,7 +44,7 @@ from config import *
 class TrafficManager:
     """交通流量管理器"""
     
-    def __init__(self, road, max_vehicles=6):
+    def __init__(self, road, max_vehicles=MAX_VEHICLES):
         self.road = road
         self.vehicles = []
         self.max_vehicles = max_vehicles
@@ -77,6 +77,19 @@ class TrafficManager:
         # 缩放因子从最低 ramping up 到目标值所占的总训练步数的比例
         self.scaling_ramp_up_ratio = 0.25
         self.current_v0_scaling = self.min_v0_scaling
+
+    def set_hv_speed_scaling(self, scaling_factor: float):
+            """
+            直接设置所有当前和未来生成的HV的速度缩放因子。
+            主要用于评估阶段。
+            """
+            self.current_v0_scaling = np.clip(scaling_factor, 0.1, 1.0)
+            print(f"--- Manually setting HV speed scaling factor to: {self.current_v0_scaling:.2f} ---")
+
+            # (可选但推荐) 同时更新当前场景中已存在的HV的速度设置
+            for vehicle in self.vehicles:
+                if not getattr(vehicle, 'is_rl_agent', False) and hasattr(vehicle, 'planner') and hasattr(vehicle.planner, 'update_speed_scaling'):
+                    vehicle.planner.update_speed_scaling(self.current_v0_scaling)
 
     def update_curriculum_parameters(self, current_step: int, total_steps: int):
             """更新训练进度，并计算当前的v0缩放因子"""
@@ -390,7 +403,7 @@ class TrafficManager:
                 start_dir = random.choice(['north', 'south', 'east', 'west'])
                 end_dir = self.get_random_destination(start_dir)
                 if self.can_spawn_vehicle(start_dir): # can_spawn_vehicle 检查出生点是否空闲
-                    #agent = self.spawn_rl_agent(start_dir, end_dir)
+                    agent = self.spawn_rl_agent(start_dir, end_dir)
                     spawn_success = True
                     break
             if not spawn_success:
@@ -398,7 +411,7 @@ class TrafficManager:
                 self.clear_all_vehicles()
                 start_dir = random.choice(['north', 'south', 'east', 'west'])
                 end_dir = self.get_random_destination(start_dir)
-                #agent = self.spawn_rl_agent(start_dir, end_dir)
+                agent = self.spawn_rl_agent(start_dir, end_dir)
         
         else:
             raise ValueError(f"未知的场景名称: {scenario_name}")
