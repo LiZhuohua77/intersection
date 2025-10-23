@@ -55,6 +55,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.callbacks import CheckpointCallback
+from callbacks import CurriculumCallback
 from stable_baselines3.common.logger import configure
 
 # --- 动态导入算法 ---
@@ -87,7 +88,7 @@ def parse_args():
     
     # --- 训练过程参数 ---
     parser.add_argument("--total-timesteps", type=int, default=8_000_000, help="Total timesteps to train the agent.")
-    parser.add_argument("--save-freq", type=int, default=1_000_000, help="Save a checkpoint every N timesteps.")
+    parser.add_argument("--save-freq", type=int, default=5_000_000, help="Save a checkpoint every N timesteps.")
 
     parser.add_argument("--n-steps", type=int, default=2048, help="Num steps to run for each env per rollout (buffer size).")
     parser.add_argument("--batch-size", type=int, default=64, help="Minibatch size for each update.")
@@ -101,8 +102,8 @@ def parse_args():
     parser.add_argument("--hidden-dim", type=int, default=256, help="Dimension of the hidden layers.")
     parser.add_argument("--rnn-hidden-dim", type=int, default=64, help="Dimension of the GRU hidden layers for trajectory encoding.")
 
-    parser.add_argument("--initial-cost-limit", type=float, default=500.0, help="Initial (high) cost limit for annealing.")
-    parser.add_argument("--final-cost-limit", type=float, default=30.0, help="Final (target) cost limit after decay.")
+    parser.add_argument("--initial-cost-limit", type=float, default=2400.0, help="Initial (high) cost limit for annealing.")
+    parser.add_argument("--final-cost-limit", type=float, default=10.0, help="Final (target) cost limit after decay.")
     parser.add_argument("--decay-start-step", type=int, default=5_000_000, help="Timestep at which the cost limit decay begins.")
     parser.add_argument("--lambda-lr", type=float, default=0.035, help="Learning rate for the Lagrange multiplier lambda.")
     parser.add_argument("--cost-vf-coef", type=float, default=0.5, help="Coefficient for the cost value function loss.")
@@ -223,13 +224,19 @@ def main():
         save_path=os.path.join(model_save_dir, "model_checkpoints"),
         name_prefix=f"{args.algo}_checkpoint"
     )
+    # 我们的课程学习回调
+    curriculum_callback = CurriculumCallback(verbose=1) # 设置 verbose=1 可以看到回调的打印信息
+    
+    # 将两个回调都放入一个列表中
+    callback_list = [checkpoint_callback, curriculum_callback]
+    # --- [修改结束] ---
 
     # --- 5. [核心改进] 开始训练 ---
     # SB3的learn方法封装了所有复杂的训练循环
     print(f"--- Starting training for {args.algo.upper()} ---")
     model.learn(
         total_timesteps=args.total_timesteps,
-        callback=checkpoint_callback,
+        callback=callback_list,
         tb_log_name=run_name,
         reset_num_timesteps=(not args.resume_from)
     )

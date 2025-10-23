@@ -75,7 +75,7 @@ def parse_args():
     parser.add_argument("--algo", type=str, default="sagi_ppo_gru",
                         choices=["sagi_ppo_mlp", "sagi_ppo_gru", "ppo_gru", "ppo_mlp"], 
                         help="The algorithm of the trained agent to evaluate.")
-    parser.add_argument("--model_path", type=str, default="D:/Code/intersection/models/sagi_ppo_gru_final_model.zip",
+    parser.add_argument("--model_path", type=str, default="D:/Code/intersection/models/sagi_ppo_gru_checkpoint_30019200_steps.zip",
                         help="Path to the saved model .zip file (e.g., 'models/final_model.zip').")
     parser.add_argument("--num-episodes-per-driver", type=int, default=5,
                         help="Number of episodes to run for EACH driver type for evaluation.")
@@ -108,7 +108,7 @@ def main():
     
     # --- 2. 创建环境和游戏引擎 ---
     # 初始场景可以设置为一个通用值，后续在reset中动态指定
-    env = TrafficEnv(scenario='agent_only_simple')
+    env = TrafficEnv(scenario='cooperative_yield')
     env.reset(seed=args.seed)
     
     game_engine = GameEngine(width=800, height=800)

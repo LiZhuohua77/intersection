@@ -52,7 +52,7 @@ def parse_args():
         argparse.Namespace: 包含解析后参数的命名空间对象
     """
     parser = argparse.ArgumentParser(description="运行交通仿真环境")
-    parser.add_argument("--scenario", type=str, default="agent_only_simple", 
+    parser.add_argument("--scenario", type=str, default="cooperative_yield", 
                       help="要加载的场景")
     return parser.parse_args()
 

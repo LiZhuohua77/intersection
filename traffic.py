@@ -68,6 +68,35 @@ class TrafficManager:
         
         self.next_spawn_times = {direction: 0 for direction in self.flow_config['base_intervals']}
         self._reschedule_all_spawns()
+
+        self.current_training_step = 0
+        self.total_training_steps = 1 # 避免除零错误
+        
+        self.min_v0_scaling = 0.2  # 训练开始时的最小缩放因子
+        self.target_v0_scaling = 1.0 # 最终恢复到正常速度
+        # 缩放因子从最低 ramping up 到目标值所占的总训练步数的比例
+        self.scaling_ramp_up_ratio = 0.25
+        self.current_v0_scaling = self.min_v0_scaling
+
+    def update_curriculum_parameters(self, current_step: int, total_steps: int):
+            """更新训练进度，并计算当前的v0缩放因子"""
+            self.current_training_step = current_step
+            self.total_training_steps = max(1, total_steps)
+            
+            # --- [核心修改：计算缩放因子] ---
+            ramp_up_total_steps = self.total_training_steps * self.scaling_ramp_up_ratio
+            progress = 0.0
+            if ramp_up_total_steps > 0:
+                progress = min(1.0, self.current_training_step / ramp_up_total_steps)
+                
+            self.current_v0_scaling = self.min_v0_scaling + progress * (self.target_v0_scaling - self.min_v0_scaling)
+            # --- [核心修改结束] ---
+
+            # [新增] 将计算出的缩放因子应用到所有现有的HV上
+            # (这主要影响在 reset 时已经存在的车辆)
+            for vehicle in self.vehicles:
+                if not getattr(vehicle, 'is_rl_agent', False) and hasattr(vehicle, 'planner') and hasattr(vehicle.planner, 'update_speed_scaling'):
+                    vehicle.planner.update_speed_scaling(self.current_v0_scaling)
     
     def set_base_interval(self, direction: str, interval: float):
         """
@@ -132,8 +161,8 @@ class TrafficManager:
             end_direction = self.get_random_destination(start_direction)
         
         try:
-            vehicle = Vehicle(self.road, start_direction, end_direction, self.vehicle_id_counter)
-            
+            vehicle = Vehicle(self.road, start_direction, end_direction, self.vehicle_id_counter)        
+
             # [核心修改] 如果外部没有指定 personality 和 intent，才进行随机选择
             if personality is None:
                 personality = random.choice(list(IDM_PARAMS.keys()))
@@ -142,6 +171,8 @@ class TrafficManager:
             
             # 使用最终确定的 personality 和 intent 初始化规划器
             vehicle.initialize_planner(personality, intent)
+            if hasattr(vehicle, 'planner') and hasattr(vehicle.planner, 'update_speed_scaling'):
+                 vehicle.planner.update_speed_scaling(self.current_v0_scaling) # 应用缩放
             
             self.vehicles.append(vehicle)
             self.vehicle_id_counter += 1
@@ -349,7 +380,7 @@ class TrafficManager:
         # --------------------------------------------------------------------------
         elif scenario_name == "random_traffic":
             # AV随机路线，并预先生成1-3辆随机HV，后续动态生成更多
-            for _ in range(random.randint(1, 3)):
+            for _ in range(random.randint(1, 1)):
                 start = random.choice(['north', 'south', 'east', 'west'])
                 self.spawn_vehicle(start)
 

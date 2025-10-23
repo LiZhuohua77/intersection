@@ -79,8 +79,15 @@ class TrafficEnv(gym.Env):
 
         self.current_algo = 'sagi_ppo'
         
-        # 是否启用场景感知模式（用于场景树生成）
-        self.scenario_aware = False  # 默认关闭，可以通过reset的options参数开启
+
+    def update_curriculum(self, current_step: int, total_steps: int):
+            """
+            更新课程学习相关的参数。
+            这个方法会被 CurriculumCallback 调用。
+            """
+            # 将步数信息传递给 TrafficManager
+            if hasattr(self.traffic_manager, 'update_curriculum_parameters'):
+                self.traffic_manager.update_curriculum_parameters(current_step, total_steps)
 
     def reset(self, seed=None, options=None):
             """

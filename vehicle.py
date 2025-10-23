@@ -440,11 +440,11 @@ class Vehicle:
         time_diff = my_entry_time - other_entry_time
 
         # [调试增强] 打印决策的关键输入值
-        print(f"[DEBUG] V:{self.vehicle_id} vs V:{other_vehicle.vehicle_id} | MyTime: {my_entry_time:.2f}, OtherTime: {other_entry_time:.2f}, Diff: {time_diff:.2f}")
+        #print(f"[DEBUG] V:{self.vehicle_id} vs V:{other_vehicle.vehicle_id} | MyTime: {my_entry_time:.2f}, OtherTime: {other_entry_time:.2f}, Diff: {time_diff:.2f}")
 
-        if time_diff < -0.1: # 我方明显更快
+        if time_diff < -1: # 我方明显更快
             return log_lock_and_return(True, "R1_Win", f"Priority: Vehicle {self.vehicle_id} has priority over {other_vehicle.vehicle_id} using Rule 1 (Time-based FCFS)")
-        if time_diff > 0.1: # 对方明显更快
+        if time_diff > 1: # 对方明显更快
             return log_lock_and_return(False, "R1_Lose", f"Priority: Vehicle {self.vehicle_id} yields to {other_vehicle.vehicle_id} using Rule 1 (Time-based FCFS)")
         
         # 如果时间差在容差范围内，则进入下一条规则

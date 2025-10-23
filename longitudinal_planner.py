@@ -37,13 +37,33 @@ class LongitudinalPlanner:
         # 从配置中根据个性加载IDM参数
         if self.personality not in IDM_PARAMS:
             raise ValueError(f"未知的驾驶员个性: {self.personality}")
-        self.idm_params = IDM_PARAMS[self.personality]
+        self.idm_params = IDM_PARAMS[self.personality].copy()
+        self.v0_scaling_factor = 1.0
 
         # 实例化IDM模型
         # 注意: IDM类需要在新的 driver_models.py 文件中实现
         self.idm_model = IDM(self.idm_params)
         
         print(f"车辆 {self.vehicle.vehicle_id} 初始化规划器，个性: {self.personality}, 意图: {self.intent}")
+
+    def update_speed_scaling(self, scaling_factor: float):
+            """更新期望速度v0的缩放因子，并重新配置IDM模型"""
+            self.v0_scaling_factor = np.clip(scaling_factor, 0.1, 1.0) # 限制最小为0.1
+            
+            # 获取原始的 v0
+            original_v0 = IDM_PARAMS[self.personality]['v0']
+            
+            # 计算缩放后的 v0
+            scaled_v0 = original_v0 * self.v0_scaling_factor
+            
+            # 更新当前使用的 IDM 参数
+            self.idm_params['v0'] = scaled_v0
+            
+            # [关键] 重新配置 IDM 模型以使用新的 v0
+            self.idm_model.update_parameters(self.idm_params) 
+            # (假设您的 IDM 类有一个 update_parameters 方法，或者重新实例化 self.idm_model = IDM(...) )
+            
+            # print(f"  -> HV #{self.vehicle.vehicle_id} ({self.personality}) v0 scaled to: {scaled_v0:.2f} (Factor: {self.v0_scaling_factor:.2f})") # 用于调试
 
     def get_target_speed(self, all_vehicles) -> dict:
         """
