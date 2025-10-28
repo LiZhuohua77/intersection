@@ -403,7 +403,7 @@ class TrafficManager:
                 start_dir = random.choice(['north', 'south', 'east', 'west'])
                 end_dir = self.get_random_destination(start_dir)
                 if self.can_spawn_vehicle(start_dir): # can_spawn_vehicle 检查出生点是否空闲
-                    #agent = self.spawn_rl_agent(start_dir, end_dir)
+                    agent = self.spawn_rl_agent(start_dir, end_dir)
                     spawn_success = True
                     break
             if not spawn_success:
@@ -411,7 +411,7 @@ class TrafficManager:
                 self.clear_all_vehicles()
                 start_dir = random.choice(['north', 'south', 'east', 'west'])
                 end_dir = self.get_random_destination(start_dir)
-                #agent = self.spawn_rl_agent(start_dir, end_dir)
+                agent = self.spawn_rl_agent(start_dir, end_dir)
         
         else:
             raise ValueError(f"未知的场景名称: {scenario_name}")

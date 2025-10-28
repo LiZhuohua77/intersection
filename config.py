@@ -85,14 +85,14 @@ IDM_PARAMS = {
 INTERACTION_ZONE_RADIUS = 60.0  # 交叉口交互区域的半径 (米)
 
 # === 6. [修改] 强化学习智能体与观测空间参数 ===
-MAX_VEHICLES = 4
+MAX_VEHICLES = 5
 # Agent 物理极限
 MAX_ACCELERATION = 3.0
 MAX_STEERING_ANGLE = np.deg2rad(30.0) # 修正: 原有MPC和Agent参数中都有定义，统一在此
 
 # 观测范围
 OBSERVATION_RADIUS = 80.0
-NUM_OBSERVED_VEHICLES = 1
+NUM_OBSERVED_VEHICLES = 3
 MAX_RELEVANT_CTE = 15.0
 
 # [新增] 预测性场景树参数
