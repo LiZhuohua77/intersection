@@ -78,25 +78,37 @@ class IDM:
         # 3. 最终加速度是两者之差
         return accel_free_flow - accel_interaction
 
-    def get_target_speed(self, v_ego: float, v_lead: float = None, gap: float = None) -> float:
+    def get_target_speed(self, v_ego: float, v_lead: float = None, gap: float = None) -> float: # 返回类型改为 float
         """
-        [重构后] 统一的接口，根据输入的纯数值计算目标速度。
-        
-        参数:
-            v_ego (float): 自身车辆速度 (m/s)。
-            v_lead (float, optional): 前车/冲突车辆的速度 (m/s)。
-            gap (float, optional): 与前车/冲突点的有效距离 (m)。
-
-        返回:
-            float: 计算出的目标速度(m/s)。
+        [V3 最终版] 统一接口计算目标速度(float)，包含正确的启动助力逻辑（修正加速度）。
         """
+        # --- 1. 先计算标准的 IDM 加速度 ---
         if v_lead is None or gap is None:
-            # --- 自由流 ---
+            # 自由流
             acceleration = self.a * (1 - (v_ego / self.v0)**self.delta)
+            # reason = 'FREE_FLOW' # reason 仅用于调试或更复杂的逻辑，这里不再需要返回
         else:
-            # --- 跟驰或交叉口交互 ---
+            # 跟驰或交叉口交互
             delta_v = v_ego - v_lead
             acceleration = self._calculate_idm_accel(v_ego, delta_v, gap)
+            # reason = 'CAR_FOLLOW'
 
-        target_speed = v_ego + acceleration * SIMULATION_DT
-        return max(0, target_speed)
+        # --- 2. 启动助力逻辑：覆盖加速度 ---
+        STARTUP_THRESHOLD_SPEED = 0.5 # 低于此速度认为可能卡死 (保持您觉得合适的值)
+        MIN_STARTUP_ACCEL_FACTOR = 0.3 # 确保这个值足够克服阻力 (根据计算是 > 0.1-0.15)
+        
+        # 条件：当前速度很低，IDM计算出的加速度要求刹车或静止，但前方确实有空间
+        gap_check = gap # 使用传入的 gap 值进行判断
+        if v_ego < STARTUP_THRESHOLD_SPEED and acceleration <= 0.0 and \
+        gap_check is not None and gap_check > self.s0 * 1.1: 
+            
+            # 直接覆盖加速度为一个小的正值
+            acceleration = MIN_STARTUP_ACCEL_FACTOR * self.a 
+            # print(f"  -> IDM applying startup boost! Overriding accel to: {acceleration:.2f}") # 可以保留调试打印
+            # reason += '_BOOST' 
+        PID_LOOKAHEAD_TIME = 0.5
+        # --- 3. 使用最终确定的加速度计算目标速度 ---
+        target_speed = v_ego + acceleration * PID_LOOKAHEAD_TIME
+        
+        # --- 4. 返回非负的目标速度 (float) ---
+        return max(0.0, target_speed) # 确保返回 float 且非负

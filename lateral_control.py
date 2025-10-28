@@ -44,8 +44,15 @@ class MPCController:
         self.lr = VEHICLE_LR     # 后轴到质心的距离
         self.Iz = VEHICLE_IZ     # 车辆绕z轴的转动惯量
         self.m = VEHICLE_MASS    # 车辆质量
-        self.Cf = VEHICLE_CF     # 前轮侧偏刚度
-        self.Cr = VEHICLE_CR     # 后轮侧偏刚度
+        max_lateral_force = self.m * GRAVITATIONAL_ACCEL * 0.9
+        alpha_slip_limit = np.deg2rad(10.0)
+                
+                # 这就是物理引擎实际使用的【车轴】刚度
+        self.actual_axle_stiffness = max_lateral_force / alpha_slip_limit # (约 75900)
+
+                # 我们假设前后轴刚度相同
+        self.Cf_axle = self.actual_axle_stiffness
+        self.Cr_axle = self.actual_axle_stiffness
 
         # 初始化优化器
         self._setup_optimizer()
@@ -78,14 +85,14 @@ class MPCController:
         A[0, 2] = 1  # y_e_dot 实际上是 vy 在世界坐标系y方向的分量 + vx 在世界坐标系y方向分量
         A[1, 3] = 1  # psi_e_dot = psi_dot - psi_desired_dot, 假设期望路径的横摆角速度为0
         
-        A[2, 2] = -(2 * self.Cf + 2 * self.Cr) / (self.m * vx)
-        A[2, 3] = (2 * self.Cr * self.lr - 2 * self.Cf * self.lf) / (self.m * vx) - vx
-        A[3, 2] = (2 * self.Cr * self.lr - 2 * self.Cf * self.lf) / (self.Iz * vx)
-        A[3, 3] = -(2 * self.Cf * self.lf**2 + 2 * self.Cr * self.lr**2) / (self.Iz * vx)
+        A[2, 2] = -(self.Cf_axle + self.Cr_axle) / (self.m * vx)
+        A[2, 3] = (self.Cr_axle * self.lr - self.Cf_axle * self.lf) / (self.m * vx) - vx
+        A[3, 2] = (self.Cr_axle * self.lr - self.Cf_axle * self.lf) / (self.Iz * vx)
+        A[3, 3] = -(self.Cf_axle * self.lf**2 + self.Cr_axle * self.lr**2) / (self.Iz * vx)
 
         B = np.zeros((4, 1))
-        B[2, 0] = (2 * self.Cf) / self.m
-        B[3, 0] = (2 * self.Cf * self.lf) / self.Iz
+        B[2, 0] = self.Cf_axle / self.m
+        B[3, 0] = self.Cf_axle * self.lf / self.Iz
         
         # 离散化: Ad = I + A*dt, Bd = B*dt (欧拉前向法)
         Ad = np.eye(4) + A * SIMULATION_DT

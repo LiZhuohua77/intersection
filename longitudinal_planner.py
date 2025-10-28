@@ -43,6 +43,7 @@ class LongitudinalPlanner:
         # 实例化IDM模型
         # 注意: IDM类需要在新的 driver_models.py 文件中实现
         self.idm_model = IDM(self.idm_params)
+        self.intersection_state = 'APPROACHING'
         
         print(f"车辆 {self.vehicle.vehicle_id} 初始化规划器，个性: {self.personality}, 意图: {self.intent}")
 
@@ -65,70 +66,102 @@ class LongitudinalPlanner:
             
             # print(f"  -> HV #{self.vehicle.vehicle_id} ({self.personality}) v0 scaled to: {scaled_v0:.2f} (Factor: {self.v0_scaling_factor:.2f})") # 用于调试
 
-    def get_target_speed(self, all_vehicles) -> dict:
-        """
-        [重构版]
-        实现基于“虚拟壁障”的让行逻辑。
-
-        决策优先级:
-        1.  最高优先级: 处理与RL Agent的交互。如果意图为YIELD，则将交叉口冲突点
-            视为一个速度为0的静止障碍物进行跟驰。
-        2.  第二优先级: 处理与其他HV的交互。
-        3.  默认行为: 标准的车辆跟驰或自由流。
-        """
-        v_ego = self.vehicle.state['vx']
-        
-        # --- 1. 最高优先级：与 RL Agent 的交互 ---
-        conflicting_rl_agent = self._find_conflicting_rl_agent(all_vehicles)
-        
-        # 从Road对象读取决策区的半径 (例如 76米)
-        decision_radius = self.vehicle.road.extended_conflict_zone_radius
-        is_in_decision_zone = self.vehicle.dist_to_intersection_entry < decision_radius
-
-        if conflicting_rl_agent and is_in_decision_zone:
-            
-            if self.intent == 'GO':
-                # 意图是“抢行”，则执行自由流，无视AV
-                target_speed = self.idm_model.get_target_speed(v_ego, None, None)
-                return {'speed': target_speed, 'reason': 'INTENT_GO'}
-
-            elif self.intent == 'YIELD':
-                # [核心修改] “虚拟壁障”逻辑
-                # 将交叉口冲突点视为一个速度为0的静止前车
-                v_lead = 0.0 
-                # 与这个“虚拟前车”的距离就是到交叉口入口的距离
-                gap = self.vehicle.dist_to_intersection_entry
-                
+    def _get_default_speed(self, all_vehicles, v_ego, reason_prefix=''):
+            """
+            [辅助函数] 执行默认的跟驰或自由流逻辑。
+            """
+            lead_vehicle = self.vehicle.find_leader(all_vehicles)
+            if lead_vehicle:
+                v_lead = lead_vehicle.state['vx']
+                gap = (lead_vehicle.get_current_longitudinal_pos() - 
+                    self.vehicle.get_current_longitudinal_pos() - 
+                    lead_vehicle.length)
                 target_speed = self.idm_model.get_target_speed(v_ego, v_lead, gap)
-                return {'speed': target_speed, 'reason': 'YIELD_VIRTUAL_WALL'}
+                return {'speed': target_speed, 'reason': f'{reason_prefix}CAR_FOLLOW'}
+            else:
+                target_speed = self.idm_model.get_target_speed(v_ego, None, None)
+                return {'speed': target_speed, 'reason': f'{reason_prefix}FREE_FLOW'}
 
-        # --- 2. 第二优先级：与其他HV的交互 ---
-        # (这部分逻辑可以保持不变，或者也简化为虚拟壁障模型)
-        # 为保持一致性，我们同样将其简化
-        for other_hv in all_vehicles:
-            if (not getattr(other_hv, 'is_rl_agent', False) and
-                    other_hv.vehicle_id != self.vehicle.vehicle_id and
-                    self.vehicle._does_path_conflict(other_hv)):
+    def get_target_speed(self, all_vehicles) -> dict:
+            """
+            [V4 修正版] 移除了锁定的状态机，允许车辆在冲突消失后重新启动。
+            决策逻辑在感知区内的每一步都会重新评估。
+            """
+            v_ego = self.vehicle.state['vx']
+            
+            # --- 1. 获取交叉口相关信息 ---
+            perception_radius = self.vehicle.road.extended_conflict_zone_radius
+            trigger_radius = self.vehicle.road.conflict_zone_radius + 15.0
+            dist_to_entry = self.vehicle.dist_to_intersection_entry
+            
+            is_in_perception_zone = dist_to_entry < perception_radius
+            is_at_trigger_point = dist_to_entry < trigger_radius
+            has_passed = self.vehicle.has_passed_intersection
+
+            # --- 2. 状态机逻辑 ---
+            
+            # 状态 1: 已经通过交叉口
+            if has_passed:
+                if self.intersection_state != 'PASSED':
+                    print(f"  -> HV #{self.vehicle.vehicle_id} PASSED intersection. Resetting state.")
+                    self.intersection_state = 'PASSED'
+                # 恢复默认行为
+                return self._get_default_speed(all_vehicles, v_ego, 'PASSED_')
+
+            # 状态 2: 在感知区之外
+            if not is_in_perception_zone:
+                self.intersection_state = 'APPROACHING' # 重置状态
+                # 执行默认行为
+                return self._get_default_speed(all_vehicles, v_ego, 'OUTSIDE_')
+
+            # 状态 3: 在感知区之内 (尚未通过)
+            # 此时，我们不再关心 'APPROACHING', 'DECIDING', 'YIELDING' 等旧状态
+            # 而是每一步都重新决策
+            
+            # 3a. 寻找冲突对象
+            conflicting_rl_agent = self._find_conflicting_rl_agent(all_vehicles)
+            conflicting_hv = self._find_conflicting_priority_hv(all_vehicles)
+
+            # 3b. 决策
+            needs_to_yield = False
+            yield_reason = ""
+
+            if conflicting_rl_agent and self.intent == 'YIELD':
+                needs_to_yield = True
+                yield_reason = 'YIELD_VIRTUAL_WALL (AV)'
+            
+            if not needs_to_yield and conflicting_hv:
+                if not self.vehicle.has_priority_over(conflicting_hv):
+                    needs_to_yield = True
+                    yield_reason = 'YIELD_HV'
+
+            # 3c. 执行
+            # 场景A: 决定让行 并且 已经到达触发点
+            if needs_to_yield and is_at_trigger_point:
+                if self.intersection_state != 'YIELDING':
+                    print(f"  -> HV #{self.vehicle.vehicle_id} starting to YIELD ({yield_reason}).")
+                    self.intersection_state = 'YIELDING'
                 
-                if not self.vehicle.has_priority_over(other_hv):
-                    # 需要让行另一辆HV，同样视为前方有静止障碍物
-                    v_lead = 0.0
-                    gap = self.vehicle.dist_to_intersection_entry
-                    target_speed = self.idm_model.get_target_speed(v_ego, v_lead, gap)
-                    return {'speed': target_speed, 'reason': 'YIELD_HV'}
+                # 执行让行逻辑 (减速至0)
+                v_lead = 0.0
+                gap = dist_to_entry
+                target_speed = self.idm_model.get_target_speed(v_ego, v_lead, gap)
+                return {'speed': target_speed, 'reason': 'YIELDING_ACTIVE'}
 
-        # --- 3. 默认行为：标准跟驰或自由流 ---
-        lead_vehicle = self.vehicle.find_leader(all_vehicles)
-        if lead_vehicle:
-            v_lead = lead_vehicle.state['vx']
-            gap = (lead_vehicle.get_current_longitudinal_pos() - 
-                self.vehicle.get_current_longitudinal_pos() - 
-                lead_vehicle.length)
-            target_speed = self.idm_model.get_target_speed(v_ego, v_lead, gap)
-            return {'speed': target_speed, 'reason': 'CAR_FOLLOW'}
-        else:
-            target_speed = self.idm_model.get_target_speed(v_ego, None, None)
-            return {'speed': target_speed, 'reason': 'FREE_FLOW'}
+            # 场景B: 决定通过 (或正在通过), 
+            # 或者 需要让行但尚未到达触发点
+            else:
+                if not needs_to_yield:
+                    if self.intersection_state != 'GOING':
+                        print(f"  -> HV #{self.vehicle.vehicle_id} DECIDED to GO.")
+                        self.intersection_state = 'GOING'
+                    reason_prefix = 'GOING_'
+                else: # (needs_to_yield but not at trigger point)
+                    self.intersection_state = 'DECIDING_TO_YIELD'
+                    reason_prefix = 'DECIDING_'
+
+                # 执行默认行为 (跟驰/自由流)
+                return self._get_default_speed(all_vehicles, v_ego, reason_prefix)
 
 
     def _find_conflicting_rl_agent(self, all_vehicles):
@@ -148,3 +181,14 @@ class LongitudinalPlanner:
                     return v  # 找到了需要对其做出反应的冲突对象
                     
             return None # 没有发现任何需要反应的冲突对象
+    
+    def _find_conflicting_priority_hv(self, all_vehicles):
+            """寻找一个路径冲突且比自己有优先权的HV"""
+            for v in all_vehicles:
+                if not getattr(v, 'is_rl_agent', False) and \
+                v.vehicle_id != self.vehicle.vehicle_id and \
+                self.vehicle._does_path_conflict(v) and \
+                not v.has_passed_intersection and \
+                not self.vehicle.has_priority_over(v): # 检查路权
+                    return v
+            return None

@@ -63,9 +63,9 @@ PID_KD = 100
 PID_INTEGRAL_MAX = 5000.0 # 积分抗饱和上限
 
 # MPC 控制器参数
-MPC_HORIZON = 20         # 预测时域 N
+MPC_HORIZON = 25         # 预测时域 N
 MPC_CONTROL_HORIZON = 5  # 控制时域 M
-MPC_Q = [10.0, 180.0]     # 状态误差权重 [y_e, psi_e]
+MPC_Q = [50.0, 50.0]     # 状态误差权重 [y_e, psi_e]
 MPC_R = [10.0]            # 控制输入权重 [delta]
 MPC_RD = [150.0]          # 控制输入变化率权重 [delta_dot]
 
@@ -85,7 +85,7 @@ IDM_PARAMS = {
 INTERACTION_ZONE_RADIUS = 60.0  # 交叉口交互区域的半径 (米)
 
 # === 6. [修改] 强化学习智能体与观测空间参数 ===
-MAX_VEHICLES = 2
+MAX_VEHICLES = 4
 # Agent 物理极限
 MAX_ACCELERATION = 3.0
 MAX_STEERING_ANGLE = np.deg2rad(30.0) # 修正: 原有MPC和Agent参数中都有定义，统一在此

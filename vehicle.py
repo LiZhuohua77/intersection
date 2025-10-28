@@ -228,15 +228,18 @@ class Vehicle:
 
     def find_leader(self, all_vehicles, lane_width=4):
         """
-        查找本车前方同一路径上的前车
-        考虑车辆实际行驶路径，只在相同路径上查找前车
+        [V2版] 查找本车前方同一"逻辑车道"上的最近的前车。
+        使用路径投影来判断纵向和横向关系，不再严格要求 move_str 相同。
         """
         leader = None
-        min_longitudinal_dist = float('inf')
+        min_positive_longitudinal_dist = float('inf')
 
+        # 1. 获取自身在路径上的纵向位置
         ego_pos = np.array([self.state['x'], self.state['y']])
-        
-        # 计算车辆在自身路径上的投影位置
+        #   (确保 self.path_points_np 和 self.path_distances 在 __init__ 中已正确初始化)
+        if not hasattr(self, 'path_points_np') or self.path_points_np is None or len(self.path_points_np) < 2:
+            return None # 自身路径无效，无法找前车
+            
         distances_to_ego = np.linalg.norm(self.path_points_np - ego_pos, axis=1)
         ego_proj_index = np.argmin(distances_to_ego)
         ego_longitudinal_pos = self.path_distances[ego_proj_index]
@@ -245,31 +248,29 @@ class Vehicle:
             if other_vehicle.vehicle_id == self.vehicle_id:
                 continue
                 
-            # 只考虑相同路径的车辆作为潜在前车
-            # 在交叉口场景，车辆需要有相同的起点和终点才被视为同路径
-            if hasattr(other_vehicle, 'move_str') and other_vehicle.move_str != self.move_str:
-                continue
-                
             other_pos = np.array([other_vehicle.state['x'], other_vehicle.state['y']])
             
-            # 将其他车辆投影到本车的路径上
+            # 2. 将其他车辆投影到 *本车* 的路径上
             distances_to_other = np.linalg.norm(self.path_points_np - other_pos, axis=1)
             other_proj_index = np.argmin(distances_to_other)
             
-            # 检查横向距离是否在可接受范围内（确认确实在同一车道上）
+            # 3. 检查横向距离 (是否在同一逻辑车道上)
+            #    使用一个稍宽松的阈值，例如半个车道宽度
             lateral_dist = distances_to_other[other_proj_index]
-            if lateral_dist > lane_width:
+            if lateral_dist > lane_width / 2.0: 
                 continue
 
-            # 检查纵向位置是否在前方
+            # 4. 检查纵向位置 (是否在本车前方)
             other_longitudinal_pos = self.path_distances[other_proj_index]
-            if other_longitudinal_pos <= ego_longitudinal_pos:
+            longitudinal_dist = other_longitudinal_pos - ego_longitudinal_pos
+            
+            # 只要在前方 (longitudinal_dist > 0)，就可能是前车
+            if longitudinal_dist <= 0:
                 continue
                 
-            # 更新最近前车
-            longitudinal_dist = other_longitudinal_pos - ego_longitudinal_pos
-            if longitudinal_dist < min_longitudinal_dist:
-                min_longitudinal_dist = longitudinal_dist
+            # 5. 更新最近的前车
+            if longitudinal_dist < min_positive_longitudinal_dist:
+                min_positive_longitudinal_dist = longitudinal_dist
                 leader = other_vehicle
                 
         return leader
@@ -503,8 +504,27 @@ class Vehicle:
         
         # 1. 计算纵向力和纵向加速度 (所有速度下通用)
         F_air_drag = 0.5 * AIR_DENSITY * DRAG_COEFFICIENT * FRONTAL_AREA * vx**2 * np.sign(vx)
-        F_rolling_resistance = ROLLING_RESISTANCE_COEFFICIENT * self.m * GRAVITATIONAL_ACCEL * np.sign(vx)
-        fx_net = fx_total - F_air_drag - F_rolling_resistance
+        F_kinetic_rr_mag = ROLLING_RESISTANCE_COEFFICIENT * self.m * GRAVITATIONAL_ACCEL
+        
+        if abs(vx) < 0.1: # 低速/静止区 (使用一个小的速度阈值)
+            # 简化静摩擦模型：
+            # 施加的力(fx_total)必须克服最大静摩擦力(我们近似为动摩擦力 F_kinetic_rr_mag)
+            # 才能产生净力。
+            
+            fx_net_pre_resistance = fx_total - F_air_drag
+            
+            if abs(fx_net_pre_resistance) < F_kinetic_rr_mag:
+                # 施加的力 < 静摩擦力，净力为0
+                fx_net = 0.0
+            else:
+                # 施加的力 > 静摩擦力，计算净力 (阻力方向与施加力相反)
+                F_rolling_resistance = F_kinetic_rr_mag * np.sign(fx_net_pre_resistance)
+                fx_net = fx_net_pre_resistance - F_rolling_resistance
+        else:
+            # 高速区：使用动摩擦 (阻力方向与速度相反)
+            F_rolling_resistance = F_kinetic_rr_mag * np.sign(vx)
+            fx_net = fx_total - F_air_drag - F_rolling_resistance
+            
         ax = fx_net / self.m
         
         # 2. 根据速度选择模型，并计算相应的横向加速度(ay)和航向角加速度(psi_ddot_deriv)
