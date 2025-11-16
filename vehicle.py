@@ -1,78 +1,55 @@
 """
-@file: vehicle.py
-@description:
+Module: vehicle
+
+Overview:
 该文件是整个仿真项目中最为核心的动态实体定义文件。它包含了两个关键的类：
 - `Vehicle`: 代表由预设规则驱动的背景交通车辆 (NPC)。
 - `RLVehicle`: 继承自`Vehicle`，代表由强化学习算法驱动的、需要学习决策的智能体。
 这两个类封装了车辆的所有属性和行为，包括物理模型、感知、决策、控制和可视化。
 
----
-### `Vehicle` 类 (背景车辆 / NPC)
----
-这是一个高度集成的类，模拟了一辆具有自主决策和控制能力的常规车辆。
-
-**核心架构: “大脑”与“身体”的分离**
-
-1.  **物理实体 (“身体”):**
-    - 包含一个 `state` 字典，用于存储车辆的完整动力学状态（位置x, y, 航向角psi,
-      纵向/横向速度vx/vy, 横摆角速度psi_dot）。
-    - 包含 `_update_physics` 方法，该方法实现了基于“自行车模型”的车辆动力学方程，
-      负责根据控制指令来更新车辆状态。
-
-2.  **决策与控制系统 (“大脑”):**
-    - `Vehicle` 类通过组合的方式，集成并协调了多个独立的规划与控制模块，形成一个
-      完整的分层式“决策-控制”栈：
-        - `LongitudinalPlanner`: 作为**高级纵向决策模块**，负责处理复杂的交叉口让行等
-          需要长远规划的驾驶场景。
-        - `MPCController`: 作为**底层横向控制器**，负责根据参考路径精确计算转向角，
-          实现高精度的路径跟踪。
-        - `PIDController`: 作为**底层纵向控制器**，负责根据目标速度精确计算油门/刹车力，
-          实现高精度的速度跟踪。
-        - `GippsModel`: 作为默认的**跟驰模型**，处理常规的跟车行驶行为。
-
-**核心工作流程 (`update` 方法):**
-在每个仿真步，车辆都遵循一个清晰的“规划-控制-执行”循环：
-1.  **规划 (Plan):** 调用 `LongitudinalPlanner` 判断当前是否需要执行特殊机动（如让行），
-    并更新其内部的**速度规划缓冲区 (Speed Profile Buffer)**。
-2.  **控制 (Control):** 从速度规划缓冲区中提取当前的目标速度，并分别调用 `PIDController`
-    和 `MPCController` 计算出所需的纵向力和转向角。
-3.  **执行 (Act):** 将计算出的控制指令输入到 `_update_physics` 物理模型中，更新车辆
-    的下一时刻状态。
-
-**交通规则 (`has_priority_over` 方法):**
-`Vehicle` 类内置了一套明确的、分层级的**路权判断逻辑**，用于在交叉口进行决策。
-规则优先级为：1. 时间优先（先到先行） > 2. 行驶意图优先（直行>右转>左转） > 3. 让右原则。
-这使得NPC车辆的行为符合常规交通习惯，表现得更加真实和可预测。
-
----
-### `RLVehicle` 类 (强化学习智能体)
----
-这是一个为强化学习训练而特化的车辆类。
-
-**继承与差异:**
-- `RLVehicle` 继承自 `Vehicle`，因此它自动复用了所有的物理模型、状态表示和可视化代码。
-- **核心区别**在于，它在初始化时**禁用了所有基于规则的规划器和控制器** (`planner`,
-  `pid_controller`, `mpc_controller` 均设为 `None`)。它的驾驶行为完全由外部的
-  强化学习算法（例如DDPG）通过 `step` 方法来驱动。
-
-**Gymnasium 接口实现:**
-该类的主要作用是为 `TrafficEnv` 提供与 `Gymnasium` 环境标准兼容的核心交互接口：
-
-- **`get_observation` (状态观测):**
-  定义了**“智能体如何感知世界”**。该方法负责收集仿真世界中的原始信息（如自身速度、
-  与路径的偏差、周围车辆的相对位置和速度等），将其处理并**归一化**为一个固定长度的
-  特征向量，作为RL策略神经网络的输入。
-
-- **`calculate_reward` (奖励函数):**
-  定义了**“学习的目标是什么”**。该方法通过一个精心设计的、对多种驾驶目标（如行驶效率、
-  安全性、舒适度、路径跟踪精度）进行加权的函数来评估智能体每个动作的好坏。奖励信号是
-  引导RL算法朝着期望目标学习的唯一依据。
-
-- **`step` (动作执行与交互):**
-  定义了**“智能体如何与世界交互”**。它接收来自RL算法输出的抽象`动作`（例如，归一化
-  的油门和转向值），将其转化为物理世界中的力和转角，并调用物理引擎更新自身状态。
-  随后，它计算这一步的`奖励`和新的`观测`，并判断回合是否`终止`，最终将这些信息作为
-  一个标准元组 `(observation, reward, terminated, truncated, info)` 返回给环境。
+Functions:
+- calculate_spm_loss_kw: 根据多项式模型计算SPM电机的功率损耗。
+- Vehicle.__init__: 初始化一个背景交通车辆（NPC）。
+- Vehicle.initialize_planner: 根据个性和意图初始化车辆的纵向规划器。
+- Vehicle._update_intersection_status: 更新车辆与交叉口相关的状态标志。
+- Vehicle.find_leader: 查找本车前方的领头车辆。
+- Vehicle.update: 背景车辆的主更新循环。
+- Vehicle.get_local_observation: 提供一个标准的局部状态向量。
+- Vehicle.check_collision_with: 检查与另一辆车的碰撞。
+- Vehicle.get_speed_history: 返回车辆的速度历史记录。
+- Vehicle.get_current_longitudinal_pos: 获取车辆在路径上的纵向位置。
+- Vehicle._update_visual_feedback: 根据规划决策更新车辆的颜色。
+- Vehicle._check_completion: 检查车辆是否到达终点。
+- Vehicle._get_maneuver_type: 判断车辆的行驶意图（直行、左转、右转）。
+- Vehicle._does_path_conflict: 检查与另一辆车的路径是否冲突。
+- Vehicle.has_priority_over: 判断本车是否比另一辆车有更高优先级。
+- Vehicle._estimate_entry_time: 估算车辆到达交叉口入口的时间。
+- Vehicle._update_physics: 更新车辆的物理状态。
+- Vehicle.draw: 在Pygame表面上绘制车辆。
+- Vehicle._draw_bicycle_model_visualization: 绘制自行车模型的关键元素。
+- Vehicle._rotate_and_transform: 旋转点集并变换到屏幕坐标。
+- Vehicle._create_wheel_poly: 创建单个车轮的多边形。
+- Vehicle.get_current_speed: 获取车辆当前的总速度。
+- Vehicle.toggle_debug_info: 切换调试信息的显示。
+- Vehicle.get_state: 返回当前车辆状态的字典。
+- Vehicle.toggle_bicycle_visualization: 切换自行车模型的可视化显示。
+- Vehicle.toggle_path_visualization: 切换路径的可视化显示。
+- RLVehicle.__init__: 初始化一个强化学习智能体车辆。
+- RLVehicle.plot_reward_history: 绘制智能体在单次回合中的奖励历史。
+- RLVehicle.get_observation: 获取RL智能体的完整观测向量。
+- RLVehicle.get_base_observation: 获取基础观测（自身+周围车辆）。
+- RLVehicle._get_ego_observation: 获取智能体自身的观测状态。
+- RLVehicle._get_surrounding_vehicles_observation: 获取周围车辆的观测状态。
+- RLVehicle._get_scenario_tree_observation: 获取场景树（预测轨迹）的观测。
+- RLVehicle._flatten_and_normalize_trajectory: 展平并归一化预测的轨迹。
+- RLVehicle._calculate_energy_consumption: 计算电能消耗。
+- RLVehicle._calculate_signed_cross_track_error: 计算有符号的横向跟踪误差。
+- RLVehicle.calculate_reward: 计算RL智能体的奖励。
+- RLVehicle.calculate_cost: 计算与安全相关的成本。
+- RLVehicle._check_collision: 检查RL智能体是否发生碰撞。
+- RLVehicle._check_off_track: 检查车辆是否偏离路径太远。
+- RLVehicle.step: 执行一个RL动作并返回结果。
+- RLVehicle.reset: 重置RL智能体的状态。
 """
 
 import pygame
@@ -87,9 +64,17 @@ from utils import check_obb_collision
 from prediction import TrajectoryPredictor
 
 def calculate_spm_loss_kw(T_inst_nm, n_inst_rpm):
-    """
-    Calculates the power loss in kW for the SPM motor based on the polynomial model.
-    This is a vectorized version for grid calculations.
+    """根据多项式模型计算SPM电机的功率损耗（kW）。
+
+    这是一个用于网格计算的矢量化版本，基于一篇学术论文中描述的
+    表面贴装永磁（SPM）电机的损耗模型。
+
+    Args:
+        T_inst_nm (np.ndarray or float): 电机的瞬时扭矩 (Nm)。
+        n_inst_rpm (np.ndarray or float): 电机的瞬时转速 (rpm)。
+
+    Returns:
+        np.ndarray or float: 计算出的电机功率损耗 (kW)，被裁剪为非负值。
     """
     # 1. Define base values from the paper
     T_base_nm = 250.0
@@ -128,6 +113,20 @@ class Vehicle:
     它拥有自己的物理属性、状态、路径以及一套集成的规划器与控制器。
     """
     def __init__(self, road, start_direction, end_direction, vehicle_id):
+        """初始化一个背景交通车辆（NPC）。
+
+        此构造函数设置车辆的基本属性，包括其在道路网络中的路径、物理状态、
+        几何尺寸以及默认的控制器。它还初始化了与仿真相关的各种状态标志。
+
+        Args:
+            road (Road): 车辆行驶所在的道路对象。
+            start_direction (str): 车辆的起始方向（如 'north', 'south'）。
+            end_direction (str): 车辆的目标方向。
+            vehicle_id (int or str): 车辆的唯一标识符。
+
+        Raises:
+            ValueError: 如果无法为给定的起止方向生成有效路径。
+        """
         # --- 基本属性初始化 ---
         self.road = road
         self.start_direction = start_direction
@@ -186,14 +185,23 @@ class Vehicle:
         self.speed_history = []
 
     def initialize_planner(self, personality: str, intent: str):
-        """
-        [新] 这是由 TrafficEnv 调用的新接口。
-        根据分配的个性和意图，创建并初始化车辆的纵向规划器。
+        """根据分配的个性和意图，创建并初始化车辆的纵向规划器。
+
+        此方法由 `TrafficEnv` 在环境重置时调用，用于动态配置NPC车辆的行为。
+
+        Args:
+            personality (str): 车辆的驾驶个性（例如 'aggressive', 'conservative'）。
+            intent (str): 车辆在交叉口的意图（例如 'GO', 'YIELD'）。
         """
         self.planner = LongitudinalPlanner(self, personality, intent)
 
     def _update_intersection_status(self):
-        """根据车辆位置更新交叉口相关的状态标志"""
+        """根据车辆位置更新与交叉口相关的状态标志。
+
+        此方法检查车辆当前是否位于交叉口的物理冲突区域内，并相应地更新
+        `is_in_intersection` 和 `has_passed_intersection` 等标志。
+        这是一个状态机，用于跟踪车辆穿越交叉口的过程。
+        """
         if self.has_passed_intersection:
             return
 
@@ -227,9 +235,19 @@ class Vehicle:
             self.decision_made = True
 
     def find_leader(self, all_vehicles, lane_width=4):
-        """
-        [V2版] 查找本车前方同一"逻辑车道"上的最近的前车。
-        使用路径投影来判断纵向和横向关系，不再严格要求 move_str 相同。
+        """查找本车前方同一“逻辑车道”上的最近的前车。
+
+        该方法通过将其他车辆投影到本车的参考路径上，来判断它们是否在前方以及
+        是否在同一车道内。这比简单地比较`move_str`更具鲁棒性，特别是在路径
+        交叉或合并的区域。
+
+        Args:
+            all_vehicles (list[Vehicle]): 仿真中的所有车辆列表。
+            lane_width (float, optional): 用于判断是否在同一车道的横向距离阈值。
+                                          Defaults to 4.
+
+        Returns:
+            Vehicle or None: 如果找到前车，则返回该车辆对象；否则返回 None。
         """
         leader = None
         min_positive_longitudinal_dist = float('inf')
@@ -254,13 +272,13 @@ class Vehicle:
             distances_to_other = np.linalg.norm(self.path_points_np - other_pos, axis=1)
             other_proj_index = np.argmin(distances_to_other)
             
-            # 3. 检查横向距离 (是否在同一逻辑车道上)
+            # 3. 检查横向距离 ( 是否在同一逻辑车道上)
             #    使用一个稍宽松的阈值，例如半个车道宽度
             lateral_dist = distances_to_other[other_proj_index]
             if lateral_dist > lane_width / 2.0: 
                 continue
 
-            # 4. 检查纵向位置 (是否在本车前方)
+            # 4. 检查纵向位置 ( 是否在本车前方)
             other_longitudinal_pos = self.path_distances[other_proj_index]
             longitudinal_dist = other_longitudinal_pos - ego_longitudinal_pos
             
@@ -276,9 +294,15 @@ class Vehicle:
         return leader
     
     def update(self, dt, all_vehicles):
-        """
-        [重构后] 背景车辆(HV)的主更新循环。
-        流程简化为：实时规划 -> 控制 -> 执行。
+        """背景车辆(HV)的主更新循环。
+
+        此方法实现了“规划-控制-执行”的循环。在每个时间步，它首先调用纵向规划器
+        获取目标速度，然后调用PID和MPC控制器计算控制指令（油门/刹车和转向），
+        最后调用物理模型更新车辆状态。
+
+        Args:
+            dt (float): 仿真时间步长 (秒)。
+            all_vehicles (list[Vehicle]): 仿真中的所有车辆列表。
         """
         if self.completed or not self.planner:
             return
@@ -306,9 +330,13 @@ class Vehicle:
         self._update_visual_feedback(plan_info)
 
     def get_local_observation(self) -> np.ndarray:
-        """
-        [新] 提供一个标准的局部状态向量，供TrafficEnv的_get_observation调用。
-        这个方法对 HV 和 AV 都适用。
+        """提供一个标准的局部状态向量，供TrafficEnv的_get_observation调用。
+
+        此方法对背景车辆（HV）和强化学习智能体（AV）都适用。它计算并返回
+        一个归一化的状态向量，包括速度、角速度、路径跟踪误差和路径完成度。
+
+        Returns:
+            np.ndarray: 包含车辆归一化局部状态的NumPy数组。
         """
         # 计算横向和航向误差
         current_pos = np.array([self.state['x'], self.state['y']])
@@ -330,7 +358,17 @@ class Vehicle:
         ])
 
     def check_collision_with(self, other_vehicle) -> bool:
-        """[新] 将碰撞检测作为一个独立的、可被外部调用的方法"""
+        """将碰撞检测作为一个独立的、可被外部调用的方法。
+
+        使用 `check_obb_collision` 辅助函数来检查两个车辆的定向包围盒（OBB）
+        是否发生重叠。
+
+        Args:
+            other_vehicle (Vehicle): 要检查碰撞的另一辆车。
+
+        Returns:
+            bool: 如果发生碰撞，返回 True；否则返回 False。
+        """
         return check_obb_collision(self, other_vehicle)
 
     # --------------------------------------------------------------------------
@@ -338,12 +376,22 @@ class Vehicle:
     # --------------------------------------------------------------------------
 
     def get_speed_history(self):
-        """返回车辆从仿真开始到现在的完整速度历史记录。"""
+        """返回车辆从仿真开始到现在的完整速度历史记录。
+
+        Returns:
+            list[float]: 一个包含每个时间步速度值的列表。
+        """
         return self.speed_history
 
 
     def get_current_longitudinal_pos(self):
-        """获取车辆在自身路径上的纵向投影距离"""
+        """获取车辆在自身路径上的纵向投影距离。
+
+        该方法计算车辆当前位置在预定义参考路径上的累积行驶距离。
+
+        Returns:
+            float: 从路径起点开始的纵向距离。
+        """
         current_pos = np.array([self.state['x'], self.state['y']])
         distances_to_ego = np.linalg.norm(self.path_points_np - current_pos, axis=1)
         current_path_index = np.argmin(distances_to_ego)
@@ -351,8 +399,13 @@ class Vehicle:
 
 
     def _update_visual_feedback(self, plan_info: dict):
-        """
-        [最终更新版] 根据规划器返回的详细决策原因来更新车辆颜色。
+        """根据规划器返回的详细决策原因来更新车辆颜色。
+
+        此方法用于在可视化界面中直观地展示NPC车辆的当前决策状态。
+        例如，让行时显示为橙色，抢行时显示为红色。
+
+        Args:
+            plan_info (dict): 从纵向规划器获取的包含决策原因的字典。
         """
         if not hasattr(self, 'planner') or self.planner is None:
             self.color = (200, 200, 200)  # 灰色: 无规划器
@@ -383,7 +436,11 @@ class Vehicle:
             self.color = (200, 200, 200)  # 灰色: 正常行驶
 
     def _check_completion(self):
-        """检查是否到达路径终点"""
+        """检查车辆是否到达其参考路径的终点。
+
+        如果车辆与路径终点的距离小于一个阈值（10.0米），则将 `completed`
+        标志设置为 True。
+        """
         dist_to_end = np.linalg.norm([self.state['x'] - self.reference_path[-1][0], self.state['y'] - self.reference_path[-1][1]])
         if dist_to_end < 10.0:
             self.completed = True
@@ -394,13 +451,27 @@ class Vehicle:
     # --------------------------------------------------------------------------
 
     def _get_maneuver_type(self):
-        """根据起止方向判断车辆的行驶意图"""
+        """根据起止方向判断车辆的行驶意图（直行、右转或左转）。
+
+        Returns:
+            str: 'straight', 'right', 或 'left'。
+        """
         start, end = self.start_direction, self.end_direction
         if (start, end) in [('north', 'south'), ('south', 'north'), ('east', 'west'), ('west', 'east')]: return 'straight'
         if (start, end) in [('north', 'west'), ('south', 'east'), ('east', 'north'), ('west', 'south')]: return 'right'
         return 'left'
 
     def _does_path_conflict(self, other_vehicle):
+        """检查本车路径是否与另一辆车的路径在交叉口存在物理冲突。
+
+        此方法查询 `road` 对象中预定义的路径冲突矩阵。
+
+        Args:
+            other_vehicle (Vehicle): 要检查的另一辆车。
+
+        Returns:
+            bool: 如果路径冲突，返回 True；否则返回 False。
+        """
         my_route = self.move_str
         other_route = other_vehicle.move_str
 
@@ -410,9 +481,19 @@ class Vehicle:
         return is_conflict
 
     def has_priority_over(self, other_vehicle):
-        """
-        判断本车(self)是否比另一辆车(other_vehicle)具有更高通行优先级。
-        增加决策锁定机制以防止高频振荡。
+        """判断本车是否比另一辆车具有更高通行优先级。
+
+        此方法实现了一套分层级的交通规则来决定路权：
+        1.  **时间优先 (FCFS)**: 明显先到达交叉口的车辆有优先权。
+        2.  **行驶意图优先**: 如果到达时间相近，则按 直行 > 右转 > 左转 的顺序决定。
+        3.  **让右原则**: 如果前两条规则平局，则右侧来车有优先权。
+        为了防止决策在高频下振荡，该方法包含一个决策锁定机制。
+
+        Args:
+            other_vehicle (Vehicle): 要与之比较优先级的另一辆车。
+
+        Returns:
+            bool: 如果本车有优先权，返回 True；否则返回 False。
         """
         # [调试增强] 打印决策锁的状态
         if other_vehicle.vehicle_id in self.decision_lock:
@@ -471,34 +552,41 @@ class Vehicle:
         return log_lock_and_return(False, "Default_Lose", f"Priority: Vehicle {self.vehicle_id} yields to {other_vehicle.vehicle_id} using default rule")
 
     def _estimate_entry_time(self) -> float:
-            """
-            [新增] 估算车辆到达交叉口入口点所需的时间（秒）。
+        """估算车辆到达交叉口入口点所需的时间（秒）。
+        
+        这是一个简单的物理估算（时间 = 距离 / 速度），主要用于路权判断。
+        
+        Returns:
+            float: 预计到达时间（秒）。如果车辆静止，则返回一个极大值。
+        """
+        # 获取到交叉口入口的剩余路径距离
+        distance = self.dist_to_intersection_entry
+        
+        # 获取车辆当前的纵向速度
+        current_speed = self.state['vx']
+        
+        # 为避免除以零的错误，如果车辆基本静止，我们认为它需要无穷长时间才能到达
+        if current_speed < 0.1:
+            return float('inf')
             
-            这是一个简单的物理估算，用于路权判断。
-            
-            返回:
-                float: 预计到达时间（秒）。如果车辆静止，则返回一个极大值。
-            """
-            # 获取到交叉口入口的剩余路径距离
-            distance = self.dist_to_intersection_entry
-            
-            # 获取车辆当前的纵向速度
-            current_speed = self.state['vx']
-            
-            # 为避免除以零的错误，如果车辆基本静止，我们认为它需要无穷长时间才能到达
-            if current_speed < 0.1:
-                return float('inf')
-                
-            # 核心估算：时间 = 距离 / 速度
-            estimated_time = distance / current_speed
-            
-            return estimated_time
+        # 核心估算：时间 = 距离 / 速度
+        estimated_time = distance / current_speed
+        
+        return estimated_time
 
     def _update_physics(self, fx_total, delta, dt):
-        """
-        混合物理引擎：
-        - 高速时使用动力学自行车模型。
-        - 低速时使用运动学自行车模型以保证转向的真实性。
+        """更新车辆的物理状态。
+
+        该方法实现了一个混合物理引擎：
+        - 在高速时，使用动力学自行车模型，考虑侧滑和轮胎力。
+        - 在低速时，切换到运动学自行车模型，以避免动力学模型在低速下的不稳定性，
+          并保证转向行为的真实性。
+        它还包括对空气阻力和滚动阻力的计算。
+
+        Args:
+            fx_total (float): 施加在车辆上的总纵向力 (牛顿)。
+            delta (float): 前轮的转向角 (弧度)。
+            dt (float): 仿真时间步长 (秒)。
         """
         psi, vx, vy, psi_dot = self.state['psi'], self.state['vx'], self.state['vy'], self.state['psi_dot']
         
@@ -580,8 +668,16 @@ class Vehicle:
         self.state['psi'] += psi_dot * dt
         
     def draw(self, surface, transform_func, small_font, scale=1.0):
-        """
-        以更精细的方式绘制车辆，包括车轮、风挡和调试信息。
+        """在Pygame表面上绘制车辆。
+
+        此方法绘制车辆的车身、车轮、风挡，并可选择性地显示调试信息、
+        参考路径和自行车模型的可视化元素。
+
+        Args:
+            surface (pygame.Surface): 用于绘制的Pygame表面。
+            transform_func (callable): 将世界坐标转换为屏幕坐标的函数。
+            small_font (pygame.font.Font): 用于渲染调试文本的字体。
+            scale (float, optional): 绘图的缩放比例。 Defaults to 1.0.
         """
         x, y, psi = self.state['x'], self.state['y'], self.state['psi']
         delta = self.last_steering_angle
@@ -644,7 +740,16 @@ class Vehicle:
             surface.blit(text_surface, text_rect)
 
     def _draw_bicycle_model_visualization(self, surface, transform_func, scale):
-        """在车辆上叠加绘制自行车模型的关键元素"""
+        """在车辆上叠加绘制自行车模型的关键元素。
+
+        此方法用于调试，可视化显示车辆的底盘、车轮方向和速度矢量，
+        有助于理解物理模型的行为。
+
+        Args:
+            surface (pygame.Surface): 用于绘制的Pygame表面。
+            transform_func (callable): 将世界坐标转换为屏幕坐标的函数。
+            scale (float): 绘图的缩放比例。
+        """
         x, y, psi = self.state['x'], self.state['y'], self.state['psi']
         vx, vy, psi_dot = self.state['vx'], self.state['vy'], self.state['psi_dot']
         delta = self.last_steering_angle
@@ -681,7 +786,18 @@ class Vehicle:
         pygame.draw.circle(surface, (0, 255, 0), speed_vector_end_screen, 4)
 
     def _rotate_and_transform(self, points, x, y, angle, transform_func):
-        """辅助函数，旋转点集并变换到屏幕坐标"""
+        """辅助函数，旋转点集并变换到屏幕坐标。
+
+        Args:
+            points (list[tuple[float, float]]): 相对于车辆中心的局部坐标点列表。
+            x (float): 车辆的世界x坐标。
+            y (float): 车辆的世界y坐标。
+            angle (float): 车辆的世界航向角 (弧度)。
+            transform_func (callable): 将世界坐标转换为屏幕坐标的函数。
+
+        Returns:
+            list[tuple[float, float]]: 变换到屏幕坐标系的点列表。
+        """
         rotated_points = []
         cos_a, sin_a = np.cos(angle), np.sin(angle)
         for px, py in points:
@@ -691,7 +807,23 @@ class Vehicle:
         return rotated_points
 
     def _create_wheel_poly(self, pos, l, w, x, y, psi, delta, transform_func):
-        """辅助函数，创建并变换单个车轮的多边形"""
+        """辅助函数，创建并变换单个车轮的多边形。
+
+        此函数首先根据转向角`delta`旋转车轮，然后随车身一起进行平移和旋转。
+
+        Args:
+            pos (tuple[float, float]): 车轮中心相对于车辆中心的局部坐标。
+            l (float): 车轮长度。
+            w (float): 车轮宽度。
+            x (float): 车辆的世界x坐标。
+            y (float): 车辆的世界y坐标。
+            psi (float): 车辆的世界航向角 (弧度)。
+            delta (float): 车轮的转向角 (弧度)。
+            transform_func (callable): 将世界坐标转换为屏幕坐标的函数。
+
+        Returns:
+            list[tuple[float, float]]: 变换到屏幕坐标系的车轮多边形顶点列表。
+        """
         wheel_corners = [(-l/2, -w/2), (l/2, -w/2), (l/2, w/2), (-l/2, w/2)]
         
         # 先进行车轮自身的转向
@@ -706,22 +838,31 @@ class Vehicle:
         return self._rotate_and_transform(rotated_wheel, x, y, psi, transform_func)
     
     def get_current_speed(self):
-        """获取车辆当前的总速度（标量速度，基于 vx 和 vy）"""
+        """获取车辆当前的总速度（标量速度，基于 vx 和 vy）。
+
+        Returns:
+            float: 车辆的标量速度 (m/s)。
+        """
         return np.sqrt(self.state['vx']**2 + self.state['vy']**2)
 
     def toggle_debug_info(self):
-        """切换调试信息的显示"""
+        """切换调试信息的显示。"""
         self.show_debug = not self.show_debug
 
     def get_state(self):
-        """返回当前车辆状态的字典"""
+        """返回当前车辆状态的字典。
+
+        Returns:
+            dict: 包含车辆动力学状态的字典。
+        """
         return self.state
 
     def toggle_bicycle_visualization(self):
-        """切换自行车模型的可视化显示"""
+        """切换自行车模型的可视化显示。"""
         self.show_bicycle_model = not self.show_bicycle_model
 
     def toggle_path_visualization(self):
+        """切换参考路径的可视化显示。"""
         self.show_path_visualization = not self.show_path_visualization
 
 
@@ -730,6 +871,18 @@ class RLVehicle(Vehicle):
     一个专门为强化学习设计的车辆代理。
     """
     def __init__(self, road, start_direction, end_direction, vehicle_id):
+        """初始化一个强化学习智能体车辆。
+
+        此构造函数调用父类的构造函数，然后禁用所有基于规则的规划器和控制器，
+        因为RL智能体的行为将由外部策略网络决定。它还初始化了与RL相关的
+        特定属性，如奖励计算所需的状态变量和调试日志。
+
+        Args:
+            road (Road): 车辆行驶所在的道路对象。
+            start_direction (str): 车辆的起始方向。
+            end_direction (str): 车辆的目标方向。
+            vehicle_id (int or str): 车辆的唯一标识符。
+        """
         super().__init__(road, start_direction, end_direction, vehicle_id)
         
         self.target_route_str = f"{start_direction[0].upper()}_{end_direction[0].upper()}"
@@ -754,9 +907,16 @@ class RLVehicle(Vehicle):
         self.debug_log = []
 
     def plot_reward_history(self, save_path_base=None):
-        """
-        [修改后] 绘制智能体在单次回合中的奖励历史。
-        如果提供了 save_path_base，则将图表保存到文件；否则，直接显示。
+        """绘制智能体在单次回合中的奖励和性能指标历史。
+
+        此方法会生成两个图表：一个显示加权的奖励分量，另一个显示未加权的
+        原始性能指标（如速度、CTE等）。这对于调试奖励函数和分析智能体
+        行为非常有用。
+
+        Args:
+            save_path_base (str, optional): 保存图表的文件路径基名。如果提供，
+                图表将保存为PNG文件（例如 `base_rewards_weighted.png`），
+                否则将直接显示。 Defaults to None.
         """
         if not self.debug_log:
             print("调试日志为空，无法绘制奖励历史。")
@@ -830,9 +990,23 @@ class RLVehicle(Vehicle):
             plt.show()
 
     def get_observation(self, all_vehicles):
-        """
-        [核心修正] 
-        此方法现在是观测的唯一来源，它将拼接所有需要的信息。
+        """获取RL智能体的完整观测向量。
+
+        此方法是智能体感知世界的入口。它负责收集、处理并拼接所有需要的信息，
+        形成一个扁平化的、固定长度的NumPy数组，作为策略网络的输入。
+        观测向量包括：
+        1.  智能体自身的归一化状态。
+        2.  周围最近N辆车的相对状态。
+        3.  与冲突NPC相关的“场景树”预测轨迹。
+
+        Args:
+            all_vehicles (list[Vehicle]): 仿真中的所有车辆列表。
+
+        Returns:
+            np.ndarray: 扁平化的、准备好输入神经网络的完整观测向量。
+
+        Raises:
+            ValueError: 如果最终生成的观测向量维度与配置中定义的总维度不匹配。
         """
         # --- 1. 自身状态 ---
         ego_observation = self._get_ego_observation()
@@ -859,10 +1033,16 @@ class RLVehicle(Vehicle):
         return final_obs
 
     def get_base_observation(self, all_vehicles):
-        """
-        [重命名与简化]
-        原 get_observation -> get_base_observation
-        现在只返回基础观测（自身+周围），不再包含场景树。
+        """获取基础观测向量（自身状态 + 周围车辆状态）。
+
+        此方法提供一个不包含场景树预测的简化版观测，主要用于基线模型
+        或不需要预测性信息的场景。
+
+        Args:
+            all_vehicles (list[Vehicle]): 仿真中的所有车辆列表。
+
+        Returns:
+            np.ndarray: 扁平化的基础观测向量。
         """
         ego_observation = self._get_ego_observation()
         surrounding_obs = self._get_surrounding_vehicles_observation(all_vehicles)
@@ -871,7 +1051,14 @@ class RLVehicle(Vehicle):
         return observation
         
     def _get_ego_observation(self):
-        """[新] 抽离出自身状态的获取逻辑，使其更清晰。"""
+        """获取并计算智能体自身的归一化状态作为观测的一部分。
+
+        此辅助方法计算车辆的速度、角速度、路径跟踪误差（CTE）、航向误差（HE）
+        和路径完成度，并将它们归一化后返回。
+
+        Returns:
+            list[float]: 包含智能体自身归一化状态的列表。
+        """
         ego_vx_norm = self.state['vx'] / 15.0 # 使用数值代替GIPPS_V_DESIRED
         ego_vy_norm = self.state['vy'] / 5.0
         ego_psi_dot_norm = self.state['psi_dot'] / 2.0
@@ -893,8 +1080,17 @@ class RLVehicle(Vehicle):
         ]
 
     def _get_surrounding_vehicles_observation(self, all_vehicles):
-        """
-        [恢复后] 获取周围N辆最近的车辆的相对状态，并进行归一化。
+        """获取周围N辆最近车辆的相对状态作为观测的一部分。
+
+        此方法扫描感知范围内的所有其他车辆，按距离排序，并提取最近的
+        `NUM_OBSERVED_VEHICLES` 辆车的归一化相对位置和速度。如果车辆不足，
+        则用零填充以保持观测维度固定。
+
+        Args:
+            all_vehicles (list[Vehicle]): 仿真中的所有车辆列表。
+
+        Returns:
+            list[float]: 包含周围车辆信息的扁平化列表。
         """
         ego_pos = np.array([self.state['x'], self.state['y']])
         ego_vel = np.array([self.state['vx'], self.state['vy']])
@@ -936,8 +1132,17 @@ class RLVehicle(Vehicle):
         return surrounding_obs_flat
 
     def _get_scenario_tree_observation(self, all_vehicles):
-        """
-        [修正后] 使用新的TrajectoryPredictor来生成场景树。
+        """生成并获取场景树（预测轨迹）作为观测的一部分。
+
+        此方法首先寻找一个即将与智能体发生路径冲突的NPC车辆。如果找到，
+        它会调用 `TrajectoryPredictor` 来生成两种假设下的未来轨迹：
+        NPC“让行”和NPC“抢行”。然后将这两条轨迹归一化并展平，作为观测的一部分。
+
+        Args:
+            all_vehicles (list[Vehicle]): 仿真中的所有车辆列表。
+
+        Returns:
+            list[float]: 包含两条预测轨迹信息的扁平化列表。
         """
         # 默认情况下，两个规划都是空（用0填充）
         flat_yield_traj = np.zeros(PREDICTION_HORIZON * FEATURES_PER_STEP)
@@ -974,8 +1179,14 @@ class RLVehicle(Vehicle):
         return list(flat_yield_traj) + list(flat_go_traj)
 
     def _flatten_and_normalize_trajectory(self, trajectory):
-        """
-        [新] 辅助函数，用于处理预测出的轨迹。
+        """辅助函数，用于展平、填充/截断并归一化预测出的轨迹。
+
+        Args:
+            trajectory (list[list[float]]): 一个轨迹，格式为
+                [[x1, y1, ...], [x2, y2, ...], ...]。
+
+        Returns:
+            np.ndarray: 处理后的、一维的、归一化后的轨迹向量。
         """
         vec = np.array(trajectory).flatten()
         
@@ -991,8 +1202,17 @@ class RLVehicle(Vehicle):
 
 
     def _calculate_energy_consumption(self, commanded_accel):
-        """
-        根据车辆状态和期望加速度，计算最终的电功率消耗 P_elec。
+        """根据车辆状态和期望加速度，计算电机的瞬时电功率消耗。
+
+        该模型考虑了车辆的惯性、空气阻力、滚动阻力，并通过电机模型
+        将车轮处的机械功率需求转换回电池端的电功率消耗。它区分了驱动
+        和再生制动两种工况。
+
+        Args:
+            commanded_accel (float): 由智能体动作决定的期望纵向加速度 (m/s^2)。
+
+        Returns:
+            float: 计算出的瞬时电功率 (kW)。正值代表消耗，负值代表能量回收。
         """
         current_vx = self.state['vx']
         
@@ -1031,10 +1251,13 @@ class RLVehicle(Vehicle):
         return P_elec_kW
 
     def _calculate_signed_cross_track_error(self):
-        """
-        计算有符号的横向跟踪误差 (sCTE)。
-        这个函数的具体实现，请参考我之前给出的版本。
-        确保 sCTE > 0 代表偏向危险的左侧（对向车道），sCTE < 0 代表偏向相对安全的右侧。
+        """计算有符号的横向跟踪误差 (sCTE)。
+
+        误差的符号用于指示车辆偏离路径的方向（左侧或右侧）。
+        根据约定，正值代表偏向危险的对向车道一侧。
+
+        Returns:
+            float: 有符号的横向误差 (米)。
         """
         current_pos = np.array([self.state['x'], self.state['y']])
         distances_to_path = np.linalg.norm(self.path_points_np - current_pos, axis=1)
@@ -1057,6 +1280,24 @@ class RLVehicle(Vehicle):
         return -signed_error
 
     def calculate_reward(self, action, is_collision, is_baseline_agent):
+        """计算当前时间步的奖励值。
+
+        这是一个多目标奖励函数，旨在平衡驾驶的多个方面：
+        - **效率**: 奖励接近期望速度，并惩罚时间流逝。
+        - **安全**: 对碰撞给予巨大惩罚。
+        - **舒适度**: 惩罚剧烈的加减速和转向动作。
+        - **路径跟踪**: 奖励小的横向和航向误差。
+        - **能耗**: 惩罚高的电功率消耗。
+        - **成本 (可选)**: 对于基线PPO算法，增加一个基于势场地图的成本惩罚。
+
+        Args:
+            action (np.ndarray): 智能体输出的归一化动作 [加速度, 转向]。
+            is_collision (bool): 当前时间步是否发生碰撞。
+            is_baseline_agent (bool): 是否为基线PPO智能体（以决定是否计算成本惩罚）。
+
+        Returns:
+            dict: 一个包含所有奖励分量和总奖励的字典。
+        """
         # --- 经过重新平衡的权重 ---
         W_VELOCITY = 4.0          # 速度奖励权重（适当降低）
         VELOCITY_STD = 5.0
@@ -1126,12 +1367,28 @@ class RLVehicle(Vehicle):
         return reward_components
 
     def calculate_cost(self):
+        """计算车辆当前位置的成本。
+
+        成本是根据道路的势场地图（potential field map）来计算的，
+        用于在训练中引导智能体避开高风险区域。
+
+        Returns:
+            float: 当前位置的成本值。
+        """
         potential = self.road.get_potential_at_point(self.state['x'], self.state['y'], self.target_route_str)
+
         return potential
 
     def _check_collision(self, all_vehicles):
-        """
-        使用分离轴定理（SAT）来精确地检测OBB碰撞。
+        """检查智能体是否与任何其他车辆发生碰撞。
+
+        使用基于分离轴定理（SAT）的精确OBB（定向包围盒）碰撞检测。
+
+        Args:
+            all_vehicles (list[Vehicle]): 仿真中的所有车辆列表。
+
+        Returns:
+            bool: 如果发生碰撞，返回 True；否则返回 False。
         """
         for v in all_vehicles:
             if v.vehicle_id == self.vehicle_id:
@@ -1144,14 +1401,16 @@ class RLVehicle(Vehicle):
         return False
 
     def _check_off_track(self, max_deviation):
-        """
-        检查车辆是否偏离参考路径过远
+        """检查车辆是否偏离参考路径过远。
+
+        如果车辆当前位置到参考路径中心线的最小距离超过了给定的最大偏差，
+        则认为车辆已偏离轨道。
         
         Args:
-            max_deviation: 允许的最大横向偏差（单位：像素）
+            max_deviation (float): 允许的最大横向偏差（米）。
             
         Returns:
-            bool: 如果偏离过远返回True，否则返回False
+            bool: 如果偏离过远返回True，否则返回False。
         """
         current_pos = np.array([self.state['x'], self.state['y']])
         
@@ -1167,7 +1426,33 @@ class RLVehicle(Vehicle):
         return False
         
     def step(self, action, dt, all_vehicles, algo_name="sagi_ppo"):
-        """RL Agent的核心函数，移除了越界终止。"""
+        """执行一个RL动作，并返回环境的响应。
+
+        这是RL智能体与环境交互的核心接口，遵循Gymnasium的 `step` 函数规范。
+        它执行以下操作：
+        1.  将策略网络输出的归一化动作转换为物理世界的力和转向角。
+        2.  调用物理引擎更新车辆状态。
+        3.  检查是否触发终止条件（碰撞、完成、偏离轨道）或截断条件（超时）。
+        4.  计算当前步的奖励和成本。
+        5.  获取新的观测状态。
+        6.  记录调试信息。
+        7.  返回 (observation, reward, terminated, truncated, info) 元组。
+
+        Args:
+            action (np.ndarray): 来自策略网络的归一化动作 [加速度, 转向]。
+            dt (float): 仿真时间步长 (秒)。
+            all_vehicles (list[Vehicle]): 仿真中的所有车辆列表。
+            algo_name (str, optional): 正在使用的算法名称，用于区分是否计算成本。
+                                      Defaults to "sagi_ppo".
+
+        Returns:
+            tuple: 一个包含以下元素的元组：
+                - observation (np.ndarray): 新的观测状态。
+                - reward (float): 当前步获得的奖励。
+                - terminated (bool): 回合是否因任务完成或失败而终止。
+                - truncated (bool): 回合是否因超时等外部原因被截断。
+                - info (dict): 包含成本、失败原因和详细奖励分量的调试信息。
+        """
         self.steps_since_spawn += 1
         #print(f"Raw action from network: accel={action[0]:.2f}, steer={action[1]:.2f}")
         # 1. 解读并执行动作
@@ -1251,7 +1536,12 @@ class RLVehicle(Vehicle):
         return observation, total_reward, terminated, truncated, info
 
     def reset(self):
-        """重置Agent的状态，用于开始新回合。"""
+        """重置智能体的状态，为新回合做准备。
+
+        此方法在每个新回合开始时被调用。它重置用于计算奖励和判断超时的
+        内部状态变量，例如步数计数器、上一帧动作和调试日志。
+        注意：车辆的物理状态（位置、速度等）由环境的重置逻辑处理。
+        """
         # 这个方法的具体实现依赖于环境的重置逻辑
         # 但它内部应重置这些'last'变量
         self.last_longitudinal_pos = self.get_current_longitudinal_pos()

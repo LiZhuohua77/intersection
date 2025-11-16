@@ -56,7 +56,7 @@ class TrafficManager:
         # 交通流量参数
         self.flow_config = {
             'base_intervals': {
-                'north': 20.0, 'south': 20.0, 'east': 20.0, 'west': 20.0
+                'north': 15.0, 'south': 15.0, 'east': 15.0, 'west': 15.0
             },
             'turn_probabilities': {
                 'north': {'south': 0.4, 'east': 0.3, 'west': 0.3},

@@ -1,10 +1,20 @@
 """
-@file: driver_models.py
-@description:
+Module: driver_model
+
+Overview:
 该文件定义了用于模拟人类驾驶行为的微观交通模型。
 目前，它包含了智能驾驶员模型（IDM）的实现，该模型能够
 根据不同的参数集模拟从保守到激进的多种驾驶风格，并能处理
 常规跟驰和交叉口冲突两种核心场景。
+
+Classes:
+- IDM: 实现了智能驾驶员模型（Intelligent Driver Model）。
+
+Methods:
+- IDM.__init__: 初始化IDM模型。
+- IDM.update_parameters: 允许在初始化后更新IDM模型的参数。
+- IDM._calculate_idm_accel: IDM核心加速度计算公式的私有辅助函数。
+- IDM.get_target_speed: 统一接口计算目标速度，包含启动助力逻辑。
 """
 from config import *
 import numpy as np
@@ -21,10 +31,9 @@ class IDM:
     in empirical observations and microscopic simulations. Physical Review E.
     """
     def __init__(self, params: dict):
-        """
-        初始化IDM模型。
+        """初始化IDM模型。
         
-        参数:
+        Args:
             params (dict): 一个包含IDM参数的字典，从 config.py 的 IDM_PARAMS 中获取。
                            需要包含 'v0', 'T', 'a', 'b', 's0'。
         """
@@ -37,9 +46,15 @@ class IDM:
 
 # ==================== [新增方法] ====================
     def update_parameters(self, params: dict):
-        """
-        允许在初始化后更新IDM模型的参数。
-        主要用于课程学习中动态调整期望速度 v0。
+        """允许在初始化后更新IDM模型的参数。
+
+        此方法主要用于课程学习等场景，其中驾驶员模型的行为（如期望速度）
+        需要根据训练进度动态调整。它只更新在 `params` 字典中提供的键值对，
+        未提供的参数将保持其现有值。
+
+        Args:
+            params (dict): 一个包含要更新的IDM参数的字典。
+                           键可以是 'v0', 'T', 'a', 'b', 's0' 中的任意一个或多个。
         """
         # 使用 .get(key, self.existing_value) 来确保只更新传入字典中存在的键
         self.v0 = params.get('v0', self.v0)
@@ -54,16 +69,18 @@ class IDM:
     # ====================================================
 
     def _calculate_idm_accel(self, v: float, delta_v: float, s: float) -> float:
-        """
-        IDM核心加速度计算公式的私有辅助函数。
-        
-        参数:
-            v (float): 自身车辆速度 (m/s)
-            delta_v (float): 与前车的相对速度 (v_ego - v_lead) (m/s)
-            s (float): 与前车的有效车头间距 (m)
+        """IDM核心加速度计算公式的私有辅助函数。
+
+        该函数根据当前车辆的速度、与前车的相对速度以及它们之间的有效间距，
+        计算出瞬时加速度。它由自由流加速项和交互减速项两部分组成。
+
+        Args:
+            v (float): 自身车辆速度 (m/s)。
+            delta_v (float): 与前车的相对速度 (v_ego - v_lead) (m/s)。
+            s (float): 与前车的有效车头间距 (m)。
             
-        返回:
-            float: 计算出的加速度 (m/s^2)
+        Returns:
+            float: 计算出的加速度 (m/s^2)。
         """
         # 防止除以零错误
         s = max(s, 1e-6)
@@ -79,8 +96,28 @@ class IDM:
         return accel_free_flow - accel_interaction
 
     def get_target_speed(self, v_ego: float, v_lead: float = None, gap: float = None) -> float: # 返回类型改为 float
-        """
-        [V3 最终版] 统一接口计算目标速度(float)，包含正确的启动助力逻辑（修正加速度）。
+        """统一接口计算目标速度，包含启动助力逻辑。
+
+        此方法首先根据标准的IDM跟驰模型计算期望加速度。如果车辆处于自由流状态
+        （没有前车），它将向期望速度 `v0` 加速。如果存在前车，它将根据与前车的
+        相对速度和间距进行调整。
+
+        此外，该方法包含一个“启动助力”逻辑，用于解决车辆在低速时可能因模型
+        计算出微小负加速度而“卡死”的问题。当车辆速度极低但前方有足够空间时，
+        会强制施加一个小的正加速度以帮助启动。
+
+        最后，基于计算出的最终加速度，通过短时前瞻（PID_LOOKAHEAD_TIME）来
+        估算并返回目标速度。
+
+        Args:
+            v_ego (float): 自车当前速度 (m/s)。
+            v_lead (float, optional): 前车速度 (m/s)。如果为 None，则按自由流处理。
+                                      Defaults to None.
+            gap (float, optional): 与前车的有效车头间距 (m)。如果为 None，则按自由流处理。
+                                   Defaults to None.
+
+        Returns:
+            float: 计算出的非负目标速度 (m/s)。
         """
         # --- 1. 先计算标准的 IDM 加速度 ---
         if v_lead is None or gap is None:

@@ -60,6 +60,7 @@ from stable_baselines3.common.logger import configure
 
 # --- 动态导入算法 ---
 from sagi_ppo import SAGIPPO
+from ppo_lagrangian import PPOLagrangian
 
 import pandas as pd
 import os
@@ -81,8 +82,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train an agent for the traffic intersection environment.")
     
     # --- 实验与算法选择 ---
-    parser.add_argument("--algo", type=str, default="sagi_ppo_gru", 
-                        choices=["sagi_ppo_mlp", "sagi_ppo_gru", "ppo_gru", "ppo_mlp"], 
+    parser.add_argument("--algo", type=str, default="ppo_lagrangian_gru", 
+                        choices=["sagi_ppo_mlp", "sagi_ppo_gru", "ppo_gru", "ppo_mlp", "ppo_lagrangian_gru", "ppo_lagrangian_mlp"], 
                         help="The reinforcement learning algorithm to use.")
     parser.add_argument("--n-envs", type=int, default=1, help="Number of parallel environments to use for training.")
     
@@ -131,7 +132,7 @@ def main():
     net_arch = dict(pi=[args.hidden_dim, args.hidden_dim], vf=[args.hidden_dim, args.hidden_dim])
 
     # 如果是SAGI算法，需要额外定义成本价值网络结构
-    if args.algo.startswith("sagi_ppo"):
+    if args.algo.startswith("sagi_ppo") or args.algo.startswith("ppo_lagrangian"):
         net_arch['cost_vf'] = [args.hidden_dim, args.hidden_dim]
 
     if args.algo.endswith("_gru"):
@@ -158,7 +159,7 @@ def main():
     # --- 3. [核心改进] 初始化或加载SB3模型 ---
     model = None
     # 将两种PPO的初始化合并
-    if args.algo.startswith("ppo"):
+    if args.algo.startswith("ppo") and not args.algo.startswith("ppo_lagrangian"):
         if args.resume_from:
             print(f"--- Resuming {args.algo.upper()} training from {args.resume_from} ---")
             model = PPO.load(args.resume_from, env=env)
@@ -183,6 +184,30 @@ def main():
             seed=args.seed,
             tensorboard_log=tb_log_root_dir
         )
+    elif args.algo.startswith("ppo_lagrangian"):
+        print(f"--- Starting a new {args.algo.upper()} training run ---")
+        model = PPOLagrangian(
+            "MlpPolicy", 
+            env,
+            policy_kwargs=policy_kwargs,
+            # --- 传入所有 SAGI-PPO 的参数 ---
+            initial_cost_limit=args.initial_cost_limit,
+            final_cost_limit=args.final_cost_limit,
+            decay_start_step=args.decay_start_step,
+            lambda_lr=args.lambda_lr,
+            cost_vf_coef=args.cost_vf_coef,
+            # --- 传入所有 PPO 的参数 ---
+            learning_rate=args.lr,
+            n_steps=args.n_steps,
+            batch_size=args.batch_size,
+            n_epochs=args.n_epochs,
+            gamma=args.gamma,
+            gae_lambda=args.gae_lambda,
+            clip_range=args.clip_range,
+            seed=args.seed,
+            tensorboard_log=tb_log_root_dir,
+            verbose=1
+        )    
     elif args.algo.startswith("sagi_ppo"):
         if args.resume_from:
             # 加载模型，SB3会自动处理好自定义类的恢复

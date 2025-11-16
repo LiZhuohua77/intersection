@@ -75,7 +75,7 @@ def parse_args():
     parser.add_argument("--algo", type=str, default="sagi_ppo_gru",
                         choices=["sagi_ppo_mlp", "sagi_ppo_gru", "ppo_gru", "ppo_mlp"], 
                         help="The algorithm of the trained agent to evaluate.")
-    parser.add_argument("--model_path", type=str, default="D:/Code/intersection/models/sagi_ppo_gru_checkpoint_40000000_steps.zip",
+    parser.add_argument("--model_path", type=str, default="D:/Code/intersection/models/sagi_ppo_gru_final_model.zip",
                         
                         help="Path to the saved model .zip file (e.g., 'models/final_model.zip').")
     parser.add_argument("--num-episodes-per-driver", type=int, default=3,

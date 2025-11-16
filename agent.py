@@ -1,6 +1,7 @@
 """
-@file: agent.py
-@description:
+Module: agent
+
+Overview:
 定义了用于处理复杂、包含序列化轨迹数据的观测空间的Actor-Critic网络架构。
 
 该模块的核心是一个混合网络 (HybridActorCritic)，它包含：
@@ -9,6 +10,14 @@
 3. 最终的Actor和Critic头部，用于输出策略分布和价值估计。
 
 这个架构取代了使用简单MLP处理高维观测的传统方法，能够更有效地从时序数据中提取信息。
+
+Functions:
+- init_weights: 初始化神经网络层的权重。
+- SimpleFeaturesExtractor.__init__: 初始化简化的特征提取器。
+- SimpleFeaturesExtractor.forward: 从观测中提取简化的特征。
+- HybridFeaturesExtractor.__init__: 初始化混合特征提取器。
+- HybridFeaturesExtractor._split_observation: 将扁平的观测向量拆分为多个部分。
+- HybridFeaturesExtractor.forward: 从观测中提取混合特征。
 """
 import torch
 import torch.nn as nn
@@ -19,6 +28,17 @@ import gymnasium as gym
 
 # 权重初始化函数
 def init_weights(m):
+    """初始化神经网络层的权重。
+
+    对线性层使用正交初始化，对GRU层也使用正交初始化其权重矩阵。
+    所有偏置项都初始化为零。这有助于在训练强化学习模型时提高稳定性。
+
+    Args:
+        m (nn.Module): 要初始化的PyTorch模块（或层）。
+    
+    Returns:
+        None
+    """
     if isinstance(m, nn.Linear):
         nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
         nn.init.constant_(m.bias, 0.0)
@@ -35,6 +55,16 @@ class SimpleFeaturesExtractor(BaseFeaturesExtractor):
     它只提取AV和HV的当前状态，用于创建一个"看不懂"轨迹的基线模型。
     """
     def __init__(self, observation_space: gym.Space, av_obs_dim: int, hv_obs_dim: int):
+        """初始化简化的特征提取器。
+
+        此构造函数设置特征提取器，其输出维度仅为AV和HV状态维度之和。
+        它被设计为基线模型，故意忽略观测空间中的任何序列化轨迹数据。
+
+        Args:
+            observation_space (gym.Space): 环境的完整观测空间。
+            av_obs_dim (int): 自主车辆（AV）状态的维度。
+            hv_obs_dim (int): 人类驾驶车辆（HV）状态的维度。
+        """
         # 提取出的特征维度就是 AV 和 HV 状态维度之和
         features_dim = av_obs_dim + hv_obs_dim
         super().__init__(observation_space, features_dim)
@@ -44,6 +74,17 @@ class SimpleFeaturesExtractor(BaseFeaturesExtractor):
         self.end_idx = av_obs_dim + hv_obs_dim
 
     def forward(self, observations: torch.Tensor) -> torch.Tensor:
+        """从观测中提取简化的状态特征。
+
+        此方法接收一批扁平化的观测张量，并仅提取对应于AV和HV
+        当前状态的初始部分，忽略所有后续的轨迹数据。
+
+        Args:
+            observations (torch.Tensor): 来自环境的一批扁平化观测。
+
+        Returns:
+            torch.Tensor: 提取出的特征，仅包含AV和HV的状态。
+        """
         # 只截取观测向量的开头部分（AV状态 + HV状态）
         return observations[:, :self.end_idx]
     
@@ -53,6 +94,21 @@ class HybridFeaturesExtractor(BaseFeaturesExtractor):
     """
     def __init__(self, observation_space: gym.Space, av_obs_dim, hv_obs_dim, 
                  traj_len, traj_feat_dim, rnn_hidden_dim=64):
+        """初始化混合特征提取器。
+
+        此构造函数建立了一个复杂的特征提取器，它能够处理包含车辆常规状态和
+        多个轨迹序列的混合观测。它使用两个独立的GRU网络来编码“让行”和“通行”
+        的轨迹假设，然后将编码后的特征与常规状态拼接起来。
+
+        Args:
+            observation_space (gym.Space): 环境的完整观测空间。
+            av_obs_dim (int): 自主车辆（AV）状态的维度。
+            hv_obs_dim (int): 人类驾驶车辆（HV）状态的维度。
+            traj_len (int): 每个轨迹序列的长度。
+            traj_feat_dim (int): 轨迹序列中每个时间步的特征维度。
+            rnn_hidden_dim (int, optional): 用于轨迹编码的GRU网络的隐藏层维度。
+                                            Defaults to 64.
+        """
         
         # 计算特征提取后的最终维度
         features_dim = av_obs_dim + hv_obs_dim + (2 * rnn_hidden_dim)
@@ -71,7 +127,21 @@ class HybridFeaturesExtractor(BaseFeaturesExtractor):
         self.apply(init_weights) # 假设init_weights函数也在这个文件里
 
     def _split_observation(self, observation):
-        """辅助函数，将扁平的观测向量拆分为有意义的几部分。"""
+        """辅助函数，将扁平的观测向量拆分为有意义的几部分。
+        
+        它根据在初始化时定义的维度，将输入的一维观测张量解析为
+        AV状态、HV状态、让行轨迹和通行轨迹。
+
+        Args:
+            observation (torch.Tensor): 一批扁平化的观测，形状为 (batch_size, flat_obs_dim)。
+
+        Returns:
+            tuple[torch.Tensor, ...]: 一个包含以下张量的元组：
+                - av_obs (torch.Tensor): AV的状态。
+                - hv_obs (torch.Tensor): HV的状态。
+                - yield_traj (torch.Tensor): 重塑后的让行轨迹序列。
+                - go_traj (torch.Tensor): 重塑后的通行轨迹序列。
+        """
         current_idx = 0
         
         av_obs = observation[:, current_idx : current_idx + self.av_obs_dim]
@@ -94,6 +164,19 @@ class HybridFeaturesExtractor(BaseFeaturesExtractor):
         return av_obs, hv_obs, yield_traj, go_traj
 
     def forward(self, observations: torch.Tensor) -> torch.Tensor:
+        """从混合观测中提取并组合特征。
+
+        该前向传播方法执行以下步骤：
+        1. 使用 `_split_observation` 将扁平的输入张量拆分为AV/HV状态和轨迹序列。
+        2. 使用两个独立的GRU编码器分别处理“让行”和“通行”轨迹，提取其最终隐藏状态作为嵌入。
+        3. 将AV状态、HV状态以及两个轨迹嵌入拼接在一起，形成最终的特征向量。
+
+        Args:
+            observations (torch.Tensor): 来自环境的一批扁平化观测。
+
+        Returns:
+            torch.Tensor: 组合了所有信息源的最终特征向量。
+        """
         # 1. 拆分观测
         av_obs, hv_obs, yield_traj, go_traj = self._split_observation(observations)
         

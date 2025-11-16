@@ -212,3 +212,12 @@ class TrafficEnv(gym.Env):
                     return vehicle
 
         return None
+    
+gym.register(
+    id='TrafficEnv-v0', # <-- 我们将用这个ID来调用环境
+    entry_point='traffic_env:TrafficEnv', # '文件名:类名'
+    # （可选）您可以为不同场景注册不同版本
+    # id='TrafficEnv-Random-v0',
+    # entry_point='traffic_env:TrafficEnv',
+    # kwargs={'scenario': 'random_traffic'} 
+)
