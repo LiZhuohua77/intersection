@@ -1515,7 +1515,8 @@ class RLVehicle(Vehicle):
             'ego_vx': self.state['vx'],
             'ego_vy': self.state['vy'],
             'cross_track_error': self.cross_track_error, # 直接使用成员变量
-            'heading_error': self.heading_error      # 直接使用成员变量
+            'heading_error': self.heading_error,      # 直接使用成员变量
+            'signed_cross_track_error': self.signed_cross_track_error
         }
         self.debug_log.append(log_entry)
 

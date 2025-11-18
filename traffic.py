@@ -47,7 +47,13 @@ class TrafficManager:
     def __init__(self, road, max_vehicles=MAX_VEHICLES):
         self.road = road
         self.vehicles = []
+        self.default_max_vehicles = max_vehicles
         self.max_vehicles = max_vehicles
+        self.scenario_max_vehicles = {
+            "agent_only_simple": 1,     
+            "crossing_conflict": 2,
+            "random_traffic": max_vehicles,
+        }
         self.vehicle_id_counter = 1
         self.completed_vehicles_data = []
         self.current_scenario = 'random_traffic'
@@ -327,15 +333,19 @@ class TrafficManager:
         Args:
             scenario_name (str): 预定义的场景名称。
         """
+
+        self.max_vehicles = self.scenario_max_vehicles.get(
+            scenario_name,
+            self.default_max_vehicles  # 如果没配置，就用默认值兜底
+        )
+
         self.clear_all_vehicles()
         self.current_scenario = scenario_name
-        print(f"--- Setting up scenario: {scenario_name} ---")
+        print(f"--- Setting up scenario: {scenario_name}, max_vehicles = {self.max_vehicles} ---")
+
 
         agent = None
 
-        # --------------------------------------------------------------------------
-        # 阶段一：基础驾驶
-        # --------------------------------------------------------------------------
         if scenario_name == "agent_only_simple":
             # 1a: 随机直行或右转
             routes = [
@@ -345,36 +355,6 @@ class TrafficManager:
             ]
             start_dir, end_dir = random.choice(routes)
             agent = self.spawn_rl_agent(start_dir, end_dir)
-
-        # --------------------------------------------------------------------------
-        # 阶段二：合作交互
-        # --------------------------------------------------------------------------
-        elif scenario_name == "cooperative_yield":
-            # AV左转 vs HV直行，AV路权劣势。方向随机化。
-            scenarios = [
-                {'agent': ('south', 'west'), 'bg': ('north', 'south')},
-                {'agent': ('west', 'north'), 'bg': ('east', 'west')},
-                {'agent': ('north', 'east'), 'bg': ('south', 'north')},
-                {'agent': ('east', 'south'), 'bg': ('west', 'east')},
-            ]
-            chosen = random.choice(scenarios)
-            agent = self.spawn_rl_agent(chosen['agent'][0], chosen['agent'][1])
-            bg_vehicle = self.spawn_vehicle(chosen['bg'][0], chosen['bg'][1], personality='CONSERVATIVE')
-
-        # --------------------------------------------------------------------------
-        # 阶段三：竞争博弈
-        # --------------------------------------------------------------------------
-        elif scenario_name == "head_on_conflict":
-            # AV左转 vs HV迎头左转，路权模糊。方向随机化。
-            scenarios = [
-                {'agent': ('south', 'west'), 'bg': ('north', 'east')},
-                {'agent': ('west', 'north'), 'bg': ('east', 'south')},
-                {'agent': ('north', 'east'), 'bg': ('south', 'west')},
-                {'agent': ('east', 'south'), 'bg': ('west', 'north')},
-            ]
-            chosen = random.choice(scenarios)
-            agent = self.spawn_rl_agent(chosen['agent'][0], chosen['agent'][1])
-            bg_vehicle = self.spawn_vehicle(chosen['bg'][0], chosen['bg'][1], personality='NORMAL')
 
         elif scenario_name == "crossing_conflict":
             # AV直行 vs HV十字交叉直行。方向随机化。
@@ -386,11 +366,8 @@ class TrafficManager:
             ]
             chosen = random.choice(scenarios)
             agent = self.spawn_rl_agent(chosen['agent'][0], chosen['agent'][1])
-            bg_vehicle = self.spawn_vehicle(chosen['bg'][0], chosen['bg'][1], personality='AGGRESSIVE')
+            bg_vehicle = self.spawn_vehicle(chosen['bg'][0], chosen['bg'][1])
 
-        # --------------------------------------------------------------------------
-        # 阶段四：泛化训练
-        # --------------------------------------------------------------------------
         elif scenario_name == "random_traffic":
             # AV随机路线，并预先生成1-3辆随机HV，后续动态生成更多
             for _ in range(random.randint(1, 3)):
@@ -407,7 +384,6 @@ class TrafficManager:
                     spawn_success = True
                     break
             if not spawn_success:
-                # 如果10次都失败（交通太拥挤），则清空后只生成Agent
                 self.clear_all_vehicles()
                 start_dir = random.choice(['north', 'south', 'east', 'west'])
                 end_dir = self.get_random_destination(start_dir)

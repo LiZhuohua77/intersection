@@ -52,7 +52,7 @@ class CurriculumCallback(BaseCallback):
             
             if self.verbose > 0:
                 # 打印日志，确认回调在工作
-                print(f"Callback: Updated curriculum parameters at step {current_step}")
+                print(f"step {current_step}")
                 
         # 返回 True 表示继续训练
         return True
