@@ -54,6 +54,8 @@ Functions:
 
 import pygame
 import numpy as np
+import pandas as pd
+import os
 import time
 import matplotlib.pyplot as plt
 from config import *
@@ -183,6 +185,8 @@ class Vehicle:
 
         # 记录速度
         self.speed_history = []
+        self.data_log = []
+        self.current_sim_time = 0.0
 
     def initialize_planner(self, personality: str, intent: str):
         """根据分配的个性和意图，创建并初始化车辆的纵向规划器。
@@ -328,6 +332,29 @@ class Vehicle:
         self._update_intersection_status()
         self._check_completion()
         self._update_visual_feedback(plan_info)
+        self.data_log.append({
+            't': getattr(self, 'current_sim_time', 0.0),
+            'vehicle_id': self.vehicle_id,
+            'x': self.state['x'],
+            'y': self.state['y'],
+            'vx': self.state['vx'],
+            'vy': self.state['vy'],
+            'psi': self.state['psi'],
+            'speed': self.get_current_speed(),
+            'steering': self.last_steering_angle
+        })
+
+    def save_trajectory_to_csv(self, filename=None):
+        if not self.data_log:
+            print(f"Vehicle {self.vehicle_id}: 没有数据可保存")
+            return
+            
+        if filename is None:
+            filename = f"trajectory_vehicle_{self.vehicle_id}.csv"
+            
+        df = pd.DataFrame(self.data_log)
+        df.to_csv(filename, index=False)
+        print(f"轨迹数据已保存至: {os.path.abspath(filename)}")
 
     def get_local_observation(self) -> np.ndarray:
         """提供一个标准的局部状态向量，供TrafficEnv的_get_observation调用。
@@ -1520,6 +1547,19 @@ class RLVehicle(Vehicle):
         }
         self.debug_log.append(log_entry)
 
+        if hasattr(self, 'data_log'):
+            self.data_log.append({
+                't': getattr(self, 'current_sim_time', 0.0),
+                'vehicle_id': self.vehicle_id,
+                'x': self.state['x'],
+                'y': self.state['y'],
+                'vx': self.state['vx'],
+                'vy': self.state['vy'],
+                'psi': self.state['psi'],
+                'speed': self.get_current_speed(),
+                'steering': self.last_steering_angle
+            })
+
         # --- 7. 更新用于下一帧计算的状态变量 ---
         self.last_longitudinal_pos = self.get_current_longitudinal_pos()
         self.last_action = action
@@ -1533,6 +1573,11 @@ class RLVehicle(Vehicle):
         info = {"cost": cost, 'failure': failure_reason}
         # 将详细的奖励分量添加到info字典中，以便在训练脚本中记录
         info.update({f"reward_{k}": v for k, v in reward_info.items()})
+
+        if terminated or truncated:
+            info["episode_log"] = self.debug_log.copy()
+            # 可选：清空，避免下一回合把旧数据混进来
+            self.debug_log = []
         
         return observation, total_reward, terminated, truncated, info
 
@@ -1550,3 +1595,4 @@ class RLVehicle(Vehicle):
         self.steps_since_spawn = 0
 
         self.debug_log = []
+        self.data_log = []

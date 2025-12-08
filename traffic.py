@@ -53,11 +53,13 @@ class TrafficManager:
             "agent_only_simple": 1,     
             "crossing_conflict": 2,
             "random_traffic": max_vehicles,
+            "mixed_traffic": max_vehicles,
         }
         self.vehicle_id_counter = 1
         self.completed_vehicles_data = []
         self.current_scenario = 'random_traffic'
         self.simulation_time = 0.0
+        self.acc_ratio = 0.3  # 背景车辆中使用ACC模型的比例
 
         # 交通流量参数
         self.flow_config = {
@@ -83,6 +85,12 @@ class TrafficManager:
         # 缩放因子从最低 ramping up 到目标值所占的总训练步数的比例
         self.scaling_ramp_up_ratio = 0.25
         self.current_v0_scaling = self.min_v0_scaling
+
+        self.simulation_time = 0.0
+
+    def advance_time(self, dt: float):
+        """由环境统一推进全局仿真时间"""
+        self.simulation_time += dt
 
     def set_hv_speed_scaling(self, scaling_factor: float):
             """
@@ -168,10 +176,10 @@ class TrafficManager:
                 return False
         return True
     
-    def spawn_vehicle(self, start_direction, end_direction=None, personality=None, intent=None):
+    def spawn_vehicle(self, start_direction, end_direction=None, personality=None, intent=None, driver_type="IDM"):
         """
-        [最终修正版] 创建一个背景车辆(HV)。
-        personality 和 intent 是可选的，如果没有提供，则会随机选择。
+        创建一个背景车辆(HV)。
+        driver_type: "IDM" 或 "ACC"，决定使用哪种纵向模型。
         """
         if len(self.vehicles) >= self.max_vehicles:
             return None
@@ -180,32 +188,41 @@ class TrafficManager:
             end_direction = self.get_random_destination(start_direction)
         
         try:
-            vehicle = Vehicle(self.road, start_direction, end_direction, self.vehicle_id_counter)        
+            vehicle = Vehicle(self.road, start_direction, end_direction, self.vehicle_id_counter)
 
-            # [核心修改] 如果外部没有指定 personality 和 intent，才进行随机选择
+            # 标记这辆车的驱动类型，Planner 会用到
+            vehicle.driver_type = driver_type
+
+            # 如果外部没有指定 personality / intent，则在对应模型的参数表里随机
             if personality is None:
-                personality = random.choice(list(IDM_PARAMS.keys()))
+                if driver_type == "ACC":
+                    personality = random.choice(list(ACC_PARAMS.keys()))
+                else:
+                    personality = random.choice(list(IDM_PARAMS.keys()))
             if intent is None:
                 intent = random.choice(['GO', 'YIELD'])
             
-            # 使用最终确定的 personality 和 intent 初始化规划器
             vehicle.initialize_planner(personality, intent)
             if hasattr(vehicle, 'planner') and hasattr(vehicle.planner, 'update_speed_scaling'):
-                 vehicle.planner.update_speed_scaling(self.current_v0_scaling) # 应用缩放
+                vehicle.planner.update_speed_scaling(self.current_v0_scaling)
             
             self.vehicles.append(vehicle)
             self.vehicle_id_counter += 1
             
-            print(f"生成车辆 #{vehicle.vehicle_id}: 从 {start_direction} 到 {end_direction} (个性: {personality}, 意图: {intent})")
+            print(
+                f"生成车辆 #{vehicle.vehicle_id}: 从 {start_direction} 到 {end_direction} "
+                f"(type: {driver_type}, 个性: {personality}, 意图: {intent})"
+            )
             return vehicle
         except ValueError as e:
             print(f"无法生成车辆: {e}")
             return None
 
+
     def spawn_rl_agent(self, start_direction, end_direction):
         """专门生成并返回一个RL Agent实例。"""
         # 在生成RL Agent前，最好清空环境，确保一个干净的开始
-        self.clear_all_vehicles()
+        #self.clear_all_vehicles()
         try:
             # 使用 RLVehicle 类来创建 agent
             agent = RLVehicle(self.road, start_direction, end_direction, "RL_AGENT")
@@ -218,25 +235,43 @@ class TrafficManager:
             return None
         
     def update_background_traffic(self, dt: float):
-        self.simulation_time += dt
-        if self.current_scenario == "random_traffic":
+
+        if self.current_scenario in ["random_traffic", "mixed_acc"]:
             for direction, scheduled_time in self.next_spawn_times.items():
                 if self.simulation_time >= scheduled_time:
-                    # can_spawn_vehicle 现在只检查车辆数量和出生点是否被占用
                     if self.can_spawn_vehicle(direction):
-                        self.spawn_vehicle(direction)
+                        if self.current_scenario == "mixed_acc":
+                            # 按比例决定这辆是 IDM 还是 ACC
+                            driver_type = "ACC" if random.random() < self.acc_ratio else "IDM"
+                            self.spawn_vehicle(direction, driver_type=driver_type)
+                        else:
+                            # random_traffic: 全部 IDM
+                            self.spawn_vehicle(direction)
                     self.next_spawn_times[direction] = self.simulation_time + self._sample_next_interval(direction)
         
         for vehicle in self.vehicles:
+            vehicle.current_sim_time = self.simulation_time
             self._update_vehicle_context(vehicle)
             
         for vehicle in self.vehicles[:]:
             if not getattr(vehicle, 'is_rl_agent', False):
                 vehicle.update(dt, self.vehicles)
             if vehicle.completed:
+                if hasattr(vehicle, 'save_trajectory_to_csv'):
+                     # 可以按需构造文件名，例如 "traj_bg_{id}_{timestamp}.csv"
+                    vehicle.save_trajectory_to_csv()
                 self.vehicles.remove(vehicle)
             
     def clear_all_vehicles(self):
+
+        for vehicle in self.vehicles:
+
+            if getattr(vehicle, 'is_rl_agent', False):
+                continue             
+
+            if hasattr(vehicle, 'save_trajectory_to_csv') and len(vehicle.data_log) > 0:
+                vehicle.save_trajectory_to_csv(f"trajectory_unfinished_{vehicle.vehicle_id}.csv")
+
         self.vehicles.clear()
         self.completed_vehicles_data.clear()
         self.vehicle_id_counter = 1
@@ -285,10 +320,6 @@ class TrafficManager:
         
         return stats
     
-    def clear_all_vehicles(self):
-        """清空所有车辆"""
-        self.vehicles.clear()
-        print("已清空所有车辆")
     
     def draw_debug_info(self, surface, font):
         """绘制调试信息"""
@@ -388,6 +419,30 @@ class TrafficManager:
                 start_dir = random.choice(['north', 'south', 'east', 'west'])
                 end_dir = self.get_random_destination(start_dir)
                 agent = self.spawn_rl_agent(start_dir, end_dir)
+
+        elif scenario_name == "mixed_traffic":
+            # 预先生成 2~5 辆混合的 IDM/ACC 车辆
+            num_init_hv = random.randint(2, 5)
+            for _ in range(num_init_hv):
+                start = random.choice(['north', 'south', 'east', 'west'])
+                driver_type = "ACC" if random.random() < self.acc_ratio else "IDM"
+                self.spawn_vehicle(start, driver_type=driver_type)
+
+            # 和 random_traffic 一样，为 AV 找一个安全出生点
+            spawn_success = False
+            for _ in range(10):
+                start_dir = random.choice(['north', 'south', 'east', 'west'])
+                end_dir = self.get_random_destination(start_dir)
+                if self.can_spawn_vehicle(start_dir):
+                    agent = self.spawn_rl_agent(start_dir, end_dir)
+                    spawn_success = True
+                    break
+            if not spawn_success:
+                self.clear_all_vehicles()
+                start_dir = random.choice(['north', 'south', 'east', 'west'])
+                end_dir = self.get_random_destination(start_dir)
+                agent = self.spawn_rl_agent(start_dir, end_dir)
+
         
         else:
             raise ValueError(f"未知的场景名称: {scenario_name}")

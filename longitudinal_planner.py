@@ -11,8 +11,9 @@ import random
 import numpy as np
 
 # [新] 导入新的配置项和即将创建的模型
-from config import IDM_PARAMS, INTERACTION_ZONE_RADIUS
-from driver_model import IDM # 假设这个文件和IDM类未来会创建
+from config import IDM_PARAMS, ACC_PARAMS, INTERACTION_ZONE_RADIUS
+from driver_model import IDM, ACC
+
 
 class LongitudinalPlanner:
     """
@@ -34,37 +35,48 @@ class LongitudinalPlanner:
         self.personality = personality
         self.intent = intent
 
-        # 从配置中根据个性加载IDM参数
-        if self.personality not in IDM_PARAMS:
-            raise ValueError(f"未知的驾驶员个性: {self.personality}")
-        self.idm_params = IDM_PARAMS[self.personality].copy()
+        self.driver_type = getattr(self.vehicle, "driver_type", "IDM")
+
+        if self.driver_type == "ACC":
+            if self.personality not in ACC_PARAMS:
+                raise ValueError(f"未知的 ACC 个性: {self.personality}")
+            self.base_params = ACC_PARAMS[self.personality].copy()
+            self.model_params = self.base_params.copy()
+            self.driver_model = ACC(self.model_params)
+        else:
+            if self.personality not in IDM_PARAMS:
+                raise ValueError(f"未知的驾驶员个性: {self.personality}")
+            self.base_params = IDM_PARAMS[self.personality].copy()
+            self.model_params = self.base_params.copy()
+            self.driver_model = IDM(self.model_params)
+
         self.v0_scaling_factor = 1.0
 
         # 实例化IDM模型
         # 注意: IDM类需要在新的 driver_models.py 文件中实现
-        self.idm_model = IDM(self.idm_params)
         self.intersection_state = 'APPROACHING'
         
-        print(f"车辆 {self.vehicle.vehicle_id} 初始化规划器，个性: {self.personality}, 意图: {self.intent}")
+        print(
+            f"车辆 {self.vehicle.vehicle_id} 初始化规划器，"
+            f"type: {self.driver_type}, 个性: {self.personality}, 意图: {self.intent}"
+        )
 
     def update_speed_scaling(self, scaling_factor: float):
             """更新期望速度v0的缩放因子，并重新配置IDM模型"""
             self.v0_scaling_factor = np.clip(scaling_factor, 0.1, 1.0) # 限制最小为0.1
             
-            # 获取原始的 v0
-            original_v0 = IDM_PARAMS[self.personality]['v0']
-            
-            # 计算缩放后的 v0
-            scaled_v0 = original_v0 * self.v0_scaling_factor
-            
-            # 更新当前使用的 IDM 参数
-            self.idm_params['v0'] = scaled_v0
-            
-            # [关键] 重新配置 IDM 模型以使用新的 v0
-            self.idm_model.update_parameters(self.idm_params) 
-            # (假设您的 IDM 类有一个 update_parameters 方法，或者重新实例化 self.idm_model = IDM(...) )
-            
-            # print(f"  -> HV #{self.vehicle.vehicle_id} ({self.personality}) v0 scaled to: {scaled_v0:.2f} (Factor: {self.v0_scaling_factor:.2f})") # 用于调试
+            self.model_params = self.base_params.copy()
+            if self.driver_type == "ACC":
+                original_v = self.base_params['v_set']
+                scaled_v = original_v * self.v0_scaling_factor
+                self.model_params['v_set'] = scaled_v
+            else:
+                original_v = self.base_params['v0']
+                scaled_v = original_v * self.v0_scaling_factor
+                self.model_params['v0'] = scaled_v
+
+            # 通知底层模型参数有变
+            self.driver_model.update_parameters(self.model_params)
 
     def _get_default_speed(self, all_vehicles, v_ego, reason_prefix=''):
             """
@@ -73,14 +85,17 @@ class LongitudinalPlanner:
             lead_vehicle = self.vehicle.find_leader(all_vehicles)
             if lead_vehicle:
                 v_lead = lead_vehicle.state['vx']
-                gap = (lead_vehicle.get_current_longitudinal_pos() - 
-                    self.vehicle.get_current_longitudinal_pos() - 
-                    lead_vehicle.length)
-                target_speed = self.idm_model.get_target_speed(v_ego, v_lead, gap)
+                gap = (
+                    lead_vehicle.get_current_longitudinal_pos()
+                    - self.vehicle.get_current_longitudinal_pos()
+                    - lead_vehicle.length
+                )
+                target_speed = self.driver_model.get_target_speed(v_ego, v_lead, gap)
                 return {'speed': target_speed, 'reason': f'{reason_prefix}CAR_FOLLOW'}
             else:
-                target_speed = self.idm_model.get_target_speed(v_ego, None, None)
+                target_speed = self.driver_model.get_target_speed(v_ego, None, None)
                 return {'speed': target_speed, 'reason': f'{reason_prefix}FREE_FLOW'}
+
 
     def get_target_speed(self, all_vehicles) -> dict:
             """
@@ -99,30 +114,20 @@ class LongitudinalPlanner:
             has_passed = self.vehicle.has_passed_intersection
 
             # --- 2. 状态机逻辑 ---
-            
-            # 状态 1: 已经通过交叉口
             if has_passed:
                 if self.intersection_state != 'PASSED':
                     print(f"  -> HV #{self.vehicle.vehicle_id} PASSED intersection. Resetting state.")
                     self.intersection_state = 'PASSED'
-                # 恢复默认行为
                 return self._get_default_speed(all_vehicles, v_ego, 'PASSED_')
 
-            # 状态 2: 在感知区之外
             if not is_in_perception_zone:
-                self.intersection_state = 'APPROACHING' # 重置状态
-                # 执行默认行为
+                self.intersection_state = 'APPROACHING'
                 return self._get_default_speed(all_vehicles, v_ego, 'OUTSIDE_')
 
-            # 状态 3: 在感知区之内 (尚未通过)
-            # 此时，我们不再关心 'APPROACHING', 'DECIDING', 'YIELDING' 等旧状态
-            # 而是每一步都重新决策
-            
-            # 3a. 寻找冲突对象
+            # 3. 在感知区内，逐步重决策
             conflicting_rl_agent = self._find_conflicting_rl_agent(all_vehicles)
             conflicting_hv = self._find_conflicting_priority_hv(all_vehicles)
 
-            # 3b. 决策
             needs_to_yield = False
             yield_reason = ""
 
@@ -136,32 +141,29 @@ class LongitudinalPlanner:
                     yield_reason = 'YIELD_HV'
 
             # 3c. 执行
-            # 场景A: 决定让行 并且 已经到达触发点
             if needs_to_yield and is_at_trigger_point:
                 if self.intersection_state != 'YIELDING':
                     print(f"  -> HV #{self.vehicle.vehicle_id} starting to YIELD ({yield_reason}).")
                     self.intersection_state = 'YIELDING'
                 
-                # 执行让行逻辑 (减速至0)
+                # 让行逻辑（减速到 0），底层仍用统一模型
                 v_lead = 0.0
                 gap = dist_to_entry
-                target_speed = self.idm_model.get_target_speed(v_ego, v_lead, gap)
+                target_speed = self.driver_model.get_target_speed(v_ego, v_lead, gap)
                 return {'speed': target_speed, 'reason': 'YIELDING_ACTIVE'}
 
-            # 场景B: 决定通过 (或正在通过), 
-            # 或者 需要让行但尚未到达触发点
             else:
                 if not needs_to_yield:
                     if self.intersection_state != 'GOING':
                         print(f"  -> HV #{self.vehicle.vehicle_id} DECIDED to GO.")
                         self.intersection_state = 'GOING'
                     reason_prefix = 'GOING_'
-                else: # (needs_to_yield but not at trigger point)
+                else:
                     self.intersection_state = 'DECIDING_TO_YIELD'
                     reason_prefix = 'DECIDING_'
 
-                # 执行默认行为 (跟驰/自由流)
                 return self._get_default_speed(all_vehicles, v_ego, reason_prefix)
+
 
 
     def _find_conflicting_rl_agent(self, all_vehicles):

@@ -96,7 +96,7 @@ def parse_args():
     parser.add_argument("--n-epochs", type=int, default=10, help="Number of epochs to update the policy per rollout.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")
 
-    parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate for the optimizers.")
+    parser.add_argument("--lr", type=float, default=3e-5, help="Learning rate for the optimizers.")
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor gamma.")
     parser.add_argument("--gae-lambda", type=float, default=0.95, help="Lambda for the GAE advantage calculation.")
     parser.add_argument("--clip-range", type=float, default=0.2, help="Clipping parameter for PPO.")
@@ -125,7 +125,7 @@ def main():
     # --- 1. [核心改进] 创建并行化的 Gym 环境 ---
     # 这是提升训练速度的关键
     env = make_vec_env(TrafficEnv, n_envs=args.n_envs, vec_env_cls=SubprocVecEnv,
-                       env_kwargs=dict(scenario='random_traffic'))
+                       env_kwargs=dict(scenario='mixed_traffic'))
 
     # --- 2. [核心改进] 定义自定义策略网络参数 ---
     policy_kwargs = {}

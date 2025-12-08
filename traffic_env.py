@@ -120,14 +120,25 @@ class TrafficEnv(gym.Env):
             forced_personality = options.get("hv_personality") if options else None
             forced_intent = options.get("hv_intent") if options else None
 
-            personalities = list(IDM_PARAMS.keys())
+            personalities_idm = list(IDM_PARAMS.keys())
+            personalities_acc = list(ACC_PARAMS.keys())
             intents = ['GO', 'YIELD']
             
             for hv in self.traffic_manager.vehicles:
                 if not getattr(hv, 'is_rl_agent', False):
-                    personality = forced_personality if forced_personality else random.choice(personalities)
+                    driver_type = getattr(hv, "driver_type", "IDM")
+
+                    if forced_personality:
+                        personality = forced_personality
+                    else:
+                        if driver_type == "ACC":
+                            personality = random.choice(personalities_acc)
+                        else:
+                            personality = random.choice(personalities_idm)
+
                     intent = forced_intent if forced_intent else random.choice(intents)
                     hv.initialize_planner(personality, intent)
+
             
             # --- 步骤5: 获取并返回初始观测 ---
             observation = self.rl_agent.get_observation(self.traffic_manager.vehicles)
@@ -140,7 +151,8 @@ class TrafficEnv(gym.Env):
         """执行一个时间步。"""
         # 检查是否为只有背景车辆的场景
         if self.rl_agent is None:
-            # 对于纯背景车辆场景，我们只更新背景车辆，不涉及RL智能体
+            self.traffic_manager.advance_time(self.dt)
+            # 再更新背景车辆（这里会给 HV 写 current_sim_time）
             self.traffic_manager.update_background_traffic(self.dt)
             
             # 检查是否所有背景车辆都已完成路径
@@ -158,12 +170,25 @@ class TrafficEnv(gym.Env):
             }
             
             return dummy_observation, reward, terminated, truncated, info
-            
+
+        self.traffic_manager.advance_time(self.dt)
+
+        # 2. 把本步的时间写进 RL 车，让它在 step() 里 log 时能用
+        if self.rl_agent is not None:
+            self.rl_agent.current_sim_time = self.traffic_manager.simulation_time
+
         # 1. 将所有工作交给 RL Agent 的 step 方法
         observation, reward, terminated, truncated, info = self.rl_agent.step(
             action, self.dt, self.traffic_manager.vehicles, algo_name=self.current_algo
         )
 
+        if terminated or truncated:
+            print(f"Episode finished for Agent. Terminated: {terminated}, Truncated: {truncated}")
+            if hasattr(self.rl_agent, 'save_trajectory_to_csv'):
+                # 保存 Agent 的轨迹，文件名前缀可以区分
+                filename = f"trajectory_agent_{self.rl_agent.vehicle_id}_{int(time.time())}.csv"
+                self.rl_agent.save_trajectory_to_csv(filename)
+                
         # 2. 更新背景车辆
         self.traffic_manager.update_background_traffic(self.dt)
         info.update(self._get_info())

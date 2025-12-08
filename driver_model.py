@@ -18,7 +18,6 @@ Methods:
 """
 from config import *
 import numpy as np
-
 class IDM:
     """
     智能驾驶员模型 (Intelligent Driver Model)。
@@ -149,3 +148,133 @@ class IDM:
         
         # --- 4. 返回非负的目标速度 (float) ---
         return max(0.0, target_speed) # 确保返回 float 且非负
+    
+class ACC:
+    """
+    自适应巡航控制 (Adaptive Cruise Control) 驾驶员模型。
+
+    这里使用一个比较经典的“恒定时距 + 线性控制”形式：
+    - 没有前车时：尽量跟随设定巡航速度 v_set
+    - 有前车时：根据期望车头时距 T 和最小距离 s0 来调节加速度
+
+    加速度结构：
+        a = k_p * (gap - s_des)         # 间距误差项（太近减速、太远加速）
+          + k_d * (v_lead - v_ego)      # 相对速度项（前车慢就减速）
+          + k_v * (v_set - v_ego)       # 巡航速度项（没有前车时主要起作用）
+
+    与 IDM 一样，提供:
+        - __init__(params)
+        - update_parameters(params)
+        - get_target_speed(v_ego, v_lead=None, gap=None)
+    """
+
+    def __init__(self, params: dict):
+        """初始化 ACC 模型。
+
+        Args:
+            params (dict): ACC 参数字典（建议在 config.py 里定义），需要包含：
+                - 'v_set':  期望巡航速度 (m/s)
+                - 'T':      期望时距 (s)
+                - 'a_max':  最大加速度 (m/s^2)
+                - 'b_comf': 舒适减速度 (m/s^2，正值)
+                - 's0':     最小间距 (m)
+                - 'k_p':    间距误差增益
+                - 'k_d':    相对速度增益
+                - 'k_v':    巡航速度增益
+        """
+        self.v_set  = params["v_set"]   # 巡航设定速度
+        self.T      = params["T"]       # 期望时距
+        self.a_max  = params["a_max"]   # 最大加速度
+        self.b_comf = params["b_comf"]  # 舒适减速度 (正值)
+        self.s0     = params["s0"]      # 最小间距
+
+        # 控制增益可以给默认值，这样 config 里可以省略
+        self.k_p = params.get("k_p", 0.4)
+        self.k_d = params.get("k_d", 0.8)
+        self.k_v = params.get("k_v", 0.3)
+
+    def update_parameters(self, params: dict):
+        """允许在初始化后更新 ACC 模型参数（和 IDM 一致的接口）。
+
+        只更新 params 中给出的键，其余保持不变。
+        """
+        self.v_set  = params.get("v_set",  self.v_set)
+        self.T      = params.get("T",      self.T)
+        self.a_max  = params.get("a_max",  self.a_max)
+        self.b_comf = params.get("b_comf", self.b_comf)
+        self.s0     = params.get("s0",     self.s0)
+        self.k_p    = params.get("k_p",    self.k_p)
+        self.k_d    = params.get("k_d",    self.k_d)
+        self.k_v    = params.get("k_v",    self.k_v)
+
+    def _calculate_acc_accel(self, v_ego: float, v_lead: float, gap: float) -> float:
+        """ACC 的核心加速度计算公式。
+
+        Args:
+            v_ego (float): 自车速度 (m/s)
+            v_lead (float): 前车速度 (m/s)
+            gap (float): 车头间距 (m)
+
+        Returns:
+            float: 计算得到的加速度 (m/s^2)，已做饱和处理。
+        """
+        gap = max(gap, 1e-6)
+
+        # 期望间距（恒定时距策略）
+        s_des = self.s0 + self.T * v_ego
+
+        # 间距误差（为正：太远，应该加速）
+        e_gap = gap - s_des
+
+        # 相对速度（为负：前车比自车慢，应该减速）
+        rel_v = v_lead - v_ego
+
+        # 线性控制律
+        accel = (
+            self.k_p * e_gap +      # 间距误差
+            self.k_d * rel_v +      # 相对速度
+            self.k_v * (self.v_set - v_ego)  # 巡航速度
+        )
+
+        # 饱和：不超过最大加速度 / 舒适减速度
+        accel = float(np.clip(accel, -self.b_comf, self.a_max))
+        return accel
+
+    def get_target_speed(self, v_ego: float, v_lead: float = None, gap: float = None) -> float:
+        """统一接口计算 ACC 的目标速度。
+
+        Args:
+            v_ego (float): 自车当前速度 (m/s)
+            v_lead (float, optional): 前车速度 (m/s)，如果为 None 视为无前车。
+            gap (float, optional): 车头间距 (m)，如果为 None 视为无前车。
+
+        Returns:
+            float: ACC 计算出的非负目标速度 (m/s)
+        """
+        # --- 1. 计算基础加速度 ---
+        if v_lead is None or gap is None:
+            # 没有前车：只对齐巡航速度
+            accel = self.k_v * (self.v_set - v_ego)
+            accel = float(np.clip(accel, -self.b_comf, self.a_max))
+        else:
+            # 有前车：使用 ACC 控制律
+            accel = self._calculate_acc_accel(v_ego, v_lead, gap)
+
+        # --- 2. 启动助力逻辑（和 IDM 类似，防止低速卡死） ---
+        STARTUP_THRESHOLD_SPEED = 0.5
+        MIN_STARTUP_ACCEL_FACTOR = 0.3
+
+        if (
+            v_ego < STARTUP_THRESHOLD_SPEED
+            and accel <= 0.0
+            and gap is not None
+            and gap > self.s0 * 1.1
+        ):
+            accel = max(accel, MIN_STARTUP_ACCEL_FACTOR * self.a_max)
+
+        # --- 3. 前瞻一小段时间，得到目标速度 ---
+        PID_LOOKAHEAD_TIME = 0.5  # 可以和 IDM 保持一致，或从 config 中读取
+        target_speed = v_ego + accel * PID_LOOKAHEAD_TIME
+
+        # --- 4. 保证非负速度 ---
+        return max(0.0, float(target_speed))

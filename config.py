@@ -81,11 +81,25 @@ IDM_PARAMS = {
     'CONSERVATIVE': {'v0': 11.0,  'T': 2.2, 'a': 1.0, 'b': 1.5, 's0': 2.5},
 }
 
+# ACC 驾驶员模型参数
+# v_set: 巡航速度 (m/s)
+# T:    期望时距 (s)
+# a_max: 最大加速度 (m/s^2)
+# b_comf: 舒适减速度 (m/s^2, 正值)
+# s0:   最小车头间距 (m)
+# k_p, k_d, k_v: 控制增益
+ACC_PARAMS = {
+    'DEFAULT': {
+        'v_set': 13.0, 'T': 1.6, 'a_max': 1.5, 'b_comf': 2.0, 's0': 2.0, 'k_p': 0.4, 'k_d': 0.8, 'k_v': 0.3,
+    }
+}
+
+
 # === 5. [新增] 交叉口与环境参数 ===
 INTERACTION_ZONE_RADIUS = 60.0  # 交叉口交互区域的半径 (米)
 
 # === 6. [修改] 强化学习智能体与观测空间参数 ===
-MAX_VEHICLES = 6
+MAX_VEHICLES = 10
 # Agent 物理极限
 MAX_ACCELERATION = 3.0
 MAX_STEERING_ANGLE = np.deg2rad(30.0) # 修正: 原有MPC和Agent参数中都有定义，统一在此
