@@ -53,7 +53,7 @@ def parse_args():
     parser.add_argument(
         "--algo",
         type=str,
-        default="ppo_lagrangian_gru",
+        default="sagi_ppo_mlp",
         choices=[
             "sagi_ppo_mlp",
             "sagi_ppo_gru",
@@ -67,13 +67,13 @@ def parse_args():
     parser.add_argument(
         "--model_path",
         type=str,
-        default="D:/Code/intersection/models/expt3/sagi_ppo_mlp_final_model.zip",
+        default="D:/Code/intersection/models/expt1/sagi_ppo_mlp_final_model.zip",
         help="Path to the saved model .zip file (e.g., 'models/final_model.zip').",
     )
     parser.add_argument(
         "--num-episodes",
         type=int,
-        default=2,
+        default=1,
         help="Total number of episodes to run for evaluation.",
     )
     parser.add_argument(
@@ -85,8 +85,8 @@ def parse_args():
     parser.add_argument(
         "--scenario",
         type=str,
-        default="random_traffic",
-        choices=["agent_only_simple", "random_traffic", "crossing_conflict"],
+        default="agent_only_simple",
+        choices=["agent_only_simple", "random_traffic", "crossing_conflict", "mixed_traffic","left_turn_vs_straight"],
         help="Evaluation scenario name in TrafficEnv/TrafficManager.",
     )
 

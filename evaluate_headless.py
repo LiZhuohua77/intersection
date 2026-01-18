@@ -67,7 +67,7 @@ def parse_args():
     parser.add_argument(
         "--num-episodes",
         type=int,
-        default=1000,
+        default=100,
         help="Total number of episodes to run for evaluation.",
     )
     parser.add_argument(
@@ -80,7 +80,7 @@ def parse_args():
         "--scenario",
         type=str,
         default="agent_only_simple",
-        choices=["agent_only_simple", "random_traffic", "crossing_conflict"],
+        choices=["agent_only_simple", "random_traffic", "crossing_conflict", "mixed_traffic"],
         help="Evaluation scenario name in TrafficEnv/TrafficManager.",
     )
     return parser.parse_args()

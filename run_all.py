@@ -15,21 +15,26 @@ ALGOS = [
     "ppo_gru",
     "ppo_mlp",
     "ppo_lagrangian_gru",
-    "ppo_lagrangian_mlp",
+    "ppo_lagrangian_mlp"
 ]
 
-NUM_EPISODES = 50
+NUM_EPISODES = 100
 
 # expt 与场景的对应关系：
 #   expt1 -> agent_only_simple
 #   expt2 -> crossing_conflict
 #   expt3 -> random_traffic
-EXPT_SCENARIO_LIST = [
+#   expt4 -> mixed_traffic
+""" EXPT_SCENARIO_LIST = [
     ("expt1", "agent_only_simple"),
     ("expt2", "crossing_conflict"),
     ("expt3", "random_traffic"),
-]
+    ("expt4", "mixed_traffic"),
+] """
 
+EXPT_SCENARIO_LIST = [
+    ("expt1", "agent_only_simple"),
+] 
 
 def main():
     # 切到工程目录，这样 evaluate_headless.py 里的相对引用没问题

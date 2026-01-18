@@ -54,12 +54,13 @@ class TrafficManager:
             "crossing_conflict": 2,
             "random_traffic": max_vehicles,
             "mixed_traffic": max_vehicles,
+            "background_only": max_vehicles
         }
         self.vehicle_id_counter = 1
         self.completed_vehicles_data = []
         self.current_scenario = 'random_traffic'
         self.simulation_time = 0.0
-        self.acc_ratio = 0.3  # 背景车辆中使用ACC模型的比例
+        self.acc_ratio = 0.3
 
         # 交通流量参数
         self.flow_config = {
@@ -236,11 +237,11 @@ class TrafficManager:
         
     def update_background_traffic(self, dt: float):
 
-        if self.current_scenario in ["random_traffic", "mixed_acc"]:
+        if self.current_scenario in ["random_traffic", "mixed_traffic", "background_only"]:
             for direction, scheduled_time in self.next_spawn_times.items():
                 if self.simulation_time >= scheduled_time:
                     if self.can_spawn_vehicle(direction):
-                        if self.current_scenario == "mixed_acc":
+                        if self.current_scenario == "mixed_traffic":
                             # 按比例决定这辆是 IDM 还是 ACC
                             driver_type = "ACC" if random.random() < self.acc_ratio else "IDM"
                             self.spawn_vehicle(direction, driver_type=driver_type)
@@ -399,6 +400,22 @@ class TrafficManager:
             agent = self.spawn_rl_agent(chosen['agent'][0], chosen['agent'][1])
             bg_vehicle = self.spawn_vehicle(chosen['bg'][0], chosen['bg'][1])
 
+        elif scenario_name == "left_turn_vs_straight":
+            # AV左转 vs HV对向直行 (典型的无保护左转场景，AV需避让直行HV)
+            scenarios = [
+                # AV: 南->西 (左转), HV: 北->南 (对向直行)
+                {'agent': ('south', 'west'), 'bg': ('north', 'south')},
+                # AV: 西->北 (左转), HV: 东->西 (对向直行)
+                {'agent': ('west', 'north'), 'bg': ('east', 'west')},
+                # AV: 北->东 (左转), HV: 南->北 (对向直行)
+                {'agent': ('north', 'east'), 'bg': ('south', 'north')},
+                # AV: 东->南 (左转), HV: 西->东 (对向直行)
+                {'agent': ('east', 'south'), 'bg': ('west', 'east')},
+            ]
+            chosen = random.choice(scenarios)
+            agent = self.spawn_rl_agent(chosen['agent'][0], chosen['agent'][1])
+            bg_vehicle = self.spawn_vehicle(chosen['bg'][0], chosen['bg'][1])
+
         elif scenario_name == "random_traffic":
             # AV随机路线，并预先生成1-3辆随机HV，后续动态生成更多
             for _ in range(random.randint(1, 3)):
@@ -443,6 +460,18 @@ class TrafficManager:
                 end_dir = self.get_random_destination(start_dir)
                 agent = self.spawn_rl_agent(start_dir, end_dir)
 
+        elif scenario_name == "background_only":
+            print("初始化纯背景交通场景 (无 RL Agent)...")
+            # 随机生成一些初始车辆，让场景一开始不至于太冷清
+            # 数量在 3 到 max_vehicles 之间随机，或者固定一个数量
+            num_init_hv = random.randint(3, 6)
+            for _ in range(num_init_hv):
+                start = random.choice(['north', 'south', 'east', 'west'])
+                # 随机混合 ACC 和 IDM
+                driver_type = "ACC" if random.random() < self.acc_ratio else "IDM"
+                self.spawn_vehicle(start, driver_type=driver_type)
+            
+            # 关键点：这里我们不调用 spawn_rl_agent，所以 agent 保持为 None
         
         else:
             raise ValueError(f"未知的场景名称: {scenario_name}")

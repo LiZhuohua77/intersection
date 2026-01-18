@@ -8,7 +8,7 @@ import matplotlib.ticker as ticker
 from tensorboard.backend.event_processing import event_accumulator
 
 # ================== 配置区 ==================
-EXPERIMENTS = ["expt1", "expt2", "expt3"]
+EXPERIMENTS = ["expt1", "expt2", "expt3", "expt4"]
 
 # 建议：为了图例好看，可以在这里定义一个由 key 到 "论文显示名称" 的映射
 ALGO_PRETTY_NAMES = {
@@ -135,8 +135,8 @@ def get_style_for_algo(algo_name):
     # 2. 定义线型
     # GRU: 实线 (Solid), MLP: 虚线 (Dashed)
     linestyles = {
-        "gru": "-",
-        "mlp": "--"
+        "gru": "--",
+        "mlp": "-"
     }
 
     # 解析当前 algo_name

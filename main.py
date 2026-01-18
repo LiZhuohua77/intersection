@@ -52,7 +52,7 @@ def parse_args():
         argparse.Namespace: 包含解析后参数的命名空间对象
     """
     parser = argparse.ArgumentParser(description="运行交通仿真环境")
-    parser.add_argument("--scenario", type=str, default="mixed_traffic", 
+    parser.add_argument("--scenario", type=str, default="background_only", 
                       help="要加载的场景")
     return parser.parse_args()
 
@@ -90,7 +90,7 @@ def main():
     observation, info = env.reset(options=options)
     
     # 判断是否为只有背景车辆的场景
-    is_background_only = args.scenario in ["east_west_traffic", "north_south_traffic"]
+    is_background_only = args.scenario in ["background_only"]
     
     # 打印场景信息
     print(f"加载场景: {args.scenario}")

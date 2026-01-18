@@ -28,7 +28,7 @@ import numpy as np
 import math
 from scipy.interpolate import interp1d # 使用scipy进行更精确的插值
 
-def smooth_path(path, alpha=0.9, beta=0.5, iterations=100):
+def smooth_path(path, alpha=1.5, beta=0.5, iterations=100):
     """
     使用基于梯度下降的优化方法平滑路径。
     

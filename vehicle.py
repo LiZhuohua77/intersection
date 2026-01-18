@@ -114,6 +114,8 @@ class Vehicle:
     人工车辆代理。
     它拥有自己的物理属性、状态、路径以及一套集成的规划器与控制器。
     """
+    _arrival_queue = []
+
     def __init__(self, road, start_direction, end_direction, vehicle_id):
         """初始化一个背景交通车辆（NPC）。
 
@@ -171,6 +173,7 @@ class Vehicle:
         self.last_steering_angle = 0.0
         
         # 交叉口相关状态
+        self.in_queue = False
         self.is_in_intersection = False
         self.has_passed_intersection = False
         self.interaction_decision = None
@@ -231,6 +234,11 @@ class Vehicle:
                 self.has_passed_intersection = True
                 self.is_in_intersection = False
                 self.interaction_decision = None
+                if self.in_queue:
+                    if self.vehicle_id in Vehicle._arrival_queue:
+                        Vehicle._arrival_queue.remove(self.vehicle_id)
+                    self.in_queue = False
+                    # print(f"[Queue] Vehicle {self.vehicle_id} LEFT.")
         else:
             # 在交叉口内
             self.is_in_intersection = True
@@ -345,6 +353,15 @@ class Vehicle:
         })
 
     def save_trajectory_to_csv(self, filename=None):
+        # 在这里设置一个总开关来控制是否实际保存文件
+        # 将此值更改为 False 即可禁用保存功能
+        SAVE_ENABLED = False
+
+        if not SAVE_ENABLED:
+            # 如果开关关闭，打印一条消息并直接返回
+            print(f"Vehicle {self.vehicle_id}: 轨迹保存功能已禁用，跳过保存。")
+            return
+
         if not self.data_log:
             print(f"Vehicle {self.vehicle_id}: 没有数据可保存")
             return
@@ -508,98 +525,117 @@ class Vehicle:
         return is_conflict
 
     def has_priority_over(self, other_vehicle):
-        """判断本车是否比另一辆车具有更高通行优先级。
-
-        此方法实现了一套分层级的交通规则来决定路权：
-        1.  **时间优先 (FCFS)**: 明显先到达交叉口的车辆有优先权。
-        2.  **行驶意图优先**: 如果到达时间相近，则按 直行 > 右转 > 左转 的顺序决定。
-        3.  **让右原则**: 如果前两条规则平局，则右侧来车有优先权。
-        为了防止决策在高频下振荡，该方法包含一个决策锁定机制。
-
-        Args:
-            other_vehicle (Vehicle): 要与之比较优先级的另一辆车。
-
-        Returns:
-            bool: 如果本车有优先权，返回 True；否则返回 False。
         """
-        # [调试增强] 打印决策锁的状态
-        if other_vehicle.vehicle_id in self.decision_lock:
-            lock_info = self.decision_lock[other_vehicle.vehicle_id]
-            if lock_info['steps_left'] > 0:
-                lock_info['steps_left'] -= 1
-                # print(f"[DEBUG] Vehicle {self.vehicle_id}: Lock ACTIVE for {other_vehicle.vehicle_id}. Decision: {lock_info['decision']}. Steps left: {lock_info['steps_left']}")
-                return lock_info['decision']
-            else:
-                print(f"[DEBUG] Vehicle {self.vehicle_id}: Lock EXPIRED for {other_vehicle.vehicle_id}.")
-                del self.decision_lock[other_vehicle.vehicle_id]
-
-        def log_lock_and_return(decision, rule_id, message):
-            # ... (内部逻辑不变) ...
-            # [调试增强] 在设置新锁时打印信息
-            print(f"[DEBUG] Vehicle {self.vehicle_id}: SETTING NEW LOCK for {other_vehicle.vehicle_id}. Decision: {decision}. Rule: {rule_id}")
-            self.decision_lock[other_vehicle.vehicle_id] = {
-                'decision': decision,
-                'steps_left': 100  # [建议修改] 增加锁定时长
-            }
-            return decision
-
-        # 规则1: Time-based FCFS（先进入冲突区的先通过）
-        my_entry_time = self._estimate_entry_time()
-        other_entry_time = other_vehicle._estimate_entry_time()
-        time_diff = my_entry_time - other_entry_time
-
-        # [调试增强] 打印决策的关键输入值
-        #print(f"[DEBUG] V:{self.vehicle_id} vs V:{other_vehicle.vehicle_id} | MyTime: {my_entry_time:.2f}, OtherTime: {other_entry_time:.2f}, Diff: {time_diff:.2f}")
-
-        if time_diff < -1: # 我方明显更快
-            return log_lock_and_return(True, "R1_Win", f"Priority: Vehicle {self.vehicle_id} has priority over {other_vehicle.vehicle_id} using Rule 1 (Time-based FCFS)")
-        if time_diff > 1: # 对方明显更快
-            return log_lock_and_return(False, "R1_Lose", f"Priority: Vehicle {self.vehicle_id} yields to {other_vehicle.vehicle_id} using Rule 1 (Time-based FCFS)")
+        判断路权。
+        逻辑升级：
+        1. 绝对防御：如果对方已经在路口内，我必须让（防止碰撞）。
+        2. 全局队列：利用 Vehicle._arrival_queue 锁定先来后到。
+        3. 规则辅助：如果排队时间差不多，再用你的直行/右转规则。
+        """
         
-        # 如果时间差在容差范围内，则进入下一条规则
+        # --- 0. [防撞铁律] 绝对防御 (解决后车无视前车的问题) ---
+        # 如果对方已经越过停止线（或大半个身子进去了），必须让！
+        # 无论算出来我有多少优先权，物理上撞上去就是输。
+        if other_vehicle.dist_to_intersection_entry < 0.1:
+            # 对方已经在里面了，我必须Yield
+            return False 
+
+        # --- 1. [新增] 全局队列管理 (Global Order Allocator) ---
+        # 只要进入路口范围（例如30米），就去“拿号”排队
+        # 这是一个“只进不出”的逻辑，保证顺序一旦确定就不变
+        entry_threshold = 30.0
         
-        # 规则2: Direction Priority（直 > 右 > 左）
-        priority_map = {'straight': 3, 'right': 2, 'left': 1}
-        my_priority = priority_map[self._get_maneuver_type()]
-        other_priority = priority_map[other_vehicle._get_maneuver_type()]
+        # 尝试把自己加入全局队列
+        if self.dist_to_intersection_entry < entry_threshold and not self.in_queue:
+            Vehicle._arrival_queue.append(self.vehicle_id)
+            self.in_queue = True
+            
+        # 尝试把对方加入全局队列（以防对方还没update）
+        if other_vehicle.dist_to_intersection_entry < entry_threshold and not other_vehicle.in_queue:
+            Vehicle._arrival_queue.append(other_vehicle.vehicle_id)
+            other_vehicle.in_queue = True
+            
+        # 如果我俩都在队列里，直接看谁排在前面！
+        # 这就是最强的“锁定”，完全消除了震荡
+        if self.in_queue and other_vehicle.in_queue:
+            try:
+                my_index = Vehicle._arrival_queue.index(self.vehicle_id)
+                other_index = Vehicle._arrival_queue.index(other_vehicle.vehicle_id)
+                
+                # 如果排队名次相差很大（比如他是第1名，我是第5名），直接服从队列
+                # 只有当名次紧挨着（diff == 1）且到达时间极其接近时，才允许用 Rule 2/3 插队
+                if my_index < other_index:
+                    return True  # 我排前面，我有路权
+                elif my_index > other_index:
+                    return False # 他排前面，我让行
+            except ValueError:
+                pass # 此时可能有一方刚离开队列，回退到下方逻辑
+
+        # --- 以下是原有的逻辑（作为兜底） ---
         
-        if my_priority > other_priority:
-            return log_lock_and_return(True, "R2_Win", f"Priority: Vehicle {self.vehicle_id} has priority over {other_vehicle.vehicle_id} using Rule 2 (Direction Priority)")
-        if my_priority < other_priority:
-            return log_lock_and_return(False, "R2_Lose", f"Priority: Vehicle {self.vehicle_id} yields to {other_vehicle.vehicle_id} using Rule 2 (Direction Priority)")
+        # 修复后的时间估算（见下方函数）
+        my_time = self._estimate_entry_time()
+        other_time = other_vehicle._estimate_entry_time()
         
-        # 规则3: Right-of-Way（让右）
+        # Rule 1: FCFS (基于物理时间)
+        if my_time - other_time < -1.5: return True
+        if my_time - other_time > 1.5: return False
+        
+        # Rule 2: 意图 (直 > 右 > 左)
+        p_map = {'straight': 3, 'right': 2, 'left': 1}
+        if p_map.get(self._get_maneuver_type(), 0) > p_map.get(other_vehicle._get_maneuver_type(), 0):
+            return True
+        if p_map.get(self._get_maneuver_type(), 0) < p_map.get(other_vehicle._get_maneuver_type(), 0):
+            return False
+            
+        # Rule 3: 让右 (Right of Way)
+        # 这里不需要改太复杂，因为上面的全局队列通常已经分出胜负了
         right_of_map = {'west': 'south', 'south': 'east', 'east': 'north', 'north': 'west'}
         if right_of_map.get(other_vehicle.start_direction) == self.start_direction:
-            return log_lock_and_return(True, "R3_Win", f"Priority: Vehicle {self.vehicle_id} has priority over {other_vehicle.vehicle_id} using Rule 3 (Right-of-Way)")
+            return True # 他在我左边（我在他右边）
         if right_of_map.get(self.start_direction) == other_vehicle.start_direction:
-            return log_lock_and_return(False, "R3_Lose", f"Priority: Vehicle {self.vehicle_id} yields to {other_vehicle.vehicle_id} using Rule 3 (Right-of-Way)")
-        
-        # 平级处理，默认不具备优先权
-        return log_lock_and_return(False, "Default_Lose", f"Priority: Vehicle {self.vehicle_id} yields to {other_vehicle.vehicle_id} using default rule")
+            return False # 他在我右边
+            
+        # Tie-Breaker
+        return self.vehicle_id < other_vehicle.vehicle_id
+
 
     def _estimate_entry_time(self) -> float:
-        """估算车辆到达交叉口入口点所需的时间（秒）。
-        
-        这是一个简单的物理估算（时间 = 距离 / 速度），主要用于路权判断。
-        
-        Returns:
-            float: 预计到达时间（秒）。如果车辆静止，则返回一个极大值。
         """
-        # 获取到交叉口入口的剩余路径距离
-        distance = self.dist_to_intersection_entry
+        [优化版] 基于虚拟巡航速度的到达时间估算 (TTA)。
         
-        # 获取车辆当前的纵向速度
-        current_speed = self.state['vx']
+        原理：为了防止静止车辆(V=0)的时间变成无穷大，我们假设所有车辆
+        至少拥有一个“虚拟底座速度”(例如 20km/h)。
+        这样，距离越近的车，算出来的时间一定越短，严格保证了前后顺序。
+        """
+        dist = self.dist_to_intersection_entry
         
-        # 为避免除以零的错误，如果车辆基本静止，我们认为它需要无穷长时间才能到达
-        if current_speed < 0.1:
-            return float('inf')
+        # 1. 绝对优先区：已经在路口内或越过停止线
+        if dist <= 0: 
+            return -1.0 
+        
+        # 2. 获取当前物理速度
+        current_v = max(0, self.state['vx'])
+        
+        # 3. 定义虚拟底座速度 (Virtual Floor Speed)
+        # 这是路口通行的平均期望速度，例如 5 m/s (18 km/h)
+        # 它的作用是：即使车停着，我也按这个速度算时间，确保它是按距离排序的
+        V_VIRTUAL = 5.0 
+        
+        # 4. 核心计算：使用“有效速度”
+        # 如果车跑得很快，用真实速度；如果车停着或蠕行，用虚拟速度
+        effective_v = max(current_v, V_VIRTUAL)
+        
+        # 计算基础时间 TTC (Time To Collision/Arrival)
+        tta = dist / effective_v
+        
+        # 5. [可选] 停车惩罚 (Stationary Penalty)
+        # 给完全静止的车加一点点微小的延迟（反应时间），
+        # 用于解决两车同时到达路口时的细微抖动，但不要加太多
+        if current_v < 0.1:
+            tta += 0.5  # 0.5秒的反应延迟
             
-        # 核心估算：时间 = 距离 / 速度
-        estimated_time = distance / current_speed
-        
-        return estimated_time
+        return tta
 
     def _update_physics(self, fx_total, delta, dt):
         """更新车辆的物理状态。

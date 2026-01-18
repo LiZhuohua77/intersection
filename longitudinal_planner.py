@@ -56,6 +56,21 @@ class LongitudinalPlanner:
         # 注意: IDM类需要在新的 driver_models.py 文件中实现
         self.intersection_state = 'APPROACHING'
         
+        # 添加转弯速度限制参数
+        self.turn_speed_limits = {
+            'left': 8.0,   # 左转限速 8 m/s
+            'right': 10.0,  # 右转限速 10 m/s
+            'straight': None  # 直行不限速
+        }
+        
+        # 根据个性调整转弯速度
+        if self.personality == 'AGGRESSIVE':
+            self.turn_speed_limits['left'] *= 1.2
+            self.turn_speed_limits['right'] *= 1.2
+        elif self.personality == 'CONSERVATIVE':
+            self.turn_speed_limits['left'] *= 0.8
+            self.turn_speed_limits['right'] *= 0.8
+
         print(
             f"车辆 {self.vehicle.vehicle_id} 初始化规划器，"
             f"type: {self.driver_type}, 个性: {self.personality}, 意图: {self.intent}"
@@ -97,72 +112,142 @@ class LongitudinalPlanner:
                 return {'speed': target_speed, 'reason': f'{reason_prefix}FREE_FLOW'}
 
 
+    def _get_turn_speed_limit(self) -> float:
+        """根据车辆的转弯类型返回速度限制"""
+        maneuver = self.vehicle._get_maneuver_type()
+        
+        if maneuver == 'left':
+            return self.turn_speed_limits['left']
+        elif maneuver == 'right':
+            return self.turn_speed_limits['right']
+        else:
+            return float('inf')  # 直行不限速
+
+    def _is_in_turn_zone(self) -> bool:
+        """判断车辆是否在转弯区域内"""
+        # 基于车辆与交叉口中心的距离
+        center = self.vehicle.road.center
+        dist_to_center = np.hypot(
+            self.vehicle.state['x'] - center[0],
+            self.vehicle.state['y'] - center[1]
+        )
+        
+        # 定义转弯区域半径(可调整)
+        turn_zone_radius = self.vehicle.road.conflict_zone_radius * 2
+        
+        return dist_to_center < turn_zone_radius
+
     def get_target_speed(self, all_vehicles) -> dict:
-            """
-            [V4 修正版] 移除了锁定的状态机，允许车辆在冲突消失后重新启动。
-            决策逻辑在感知区内的每一步都会重新评估。
-            """
-            v_ego = self.vehicle.state['vx']
+        """
+        [修改版] 添加转弯速度限制
+        """
+        v_ego = self.vehicle.state['vx']
+        
+        # --- 检查是否在转弯区域 ---
+        if self._is_in_turn_zone():
+            turn_limit = self._get_turn_speed_limit()
             
-            # --- 1. 获取交叉口相关信息 ---
-            perception_radius = self.vehicle.road.extended_conflict_zone_radius
-            trigger_radius = self.vehicle.road.conflict_zone_radius + 15.0
-            dist_to_entry = self.vehicle.dist_to_intersection_entry
-            
-            is_in_perception_zone = dist_to_entry < perception_radius
-            is_at_trigger_point = dist_to_entry < trigger_radius
-            has_passed = self.vehicle.has_passed_intersection
+            # 如果当前速度超过转弯限速,需要减速
+            if v_ego > turn_limit:
+                # 使用IDM模型计算减速到目标速度
+                gap = max(5.0, v_ego * 2)  # 给一个缓冲距离
+                target_speed = self.driver_model.get_target_speed(
+                    v_ego, turn_limit, gap
+                )
+                return {
+                    'speed': min(target_speed, turn_limit),
+                    'reason': f'TURN_SPEED_LIMIT_{self.vehicle._get_maneuver_type().upper()}'
+                }
+        
+        # --- 1. 获取交叉口相关信息 ---
+        perception_radius = self.vehicle.road.extended_conflict_zone_radius
+        trigger_radius = self.vehicle.road.conflict_zone_radius + 15.0
+        dist_to_entry = self.vehicle.dist_to_intersection_entry
+        
+        is_in_perception_zone = dist_to_entry < perception_radius
+        is_at_trigger_point = dist_to_entry < trigger_radius
+        has_passed = self.vehicle.has_passed_intersection
+        is_in_intersection = self.vehicle.is_in_intersection
 
-            # --- 2. 状态机逻辑 ---
-            if has_passed:
-                if self.intersection_state != 'PASSED':
-                    print(f"  -> HV #{self.vehicle.vehicle_id} PASSED intersection. Resetting state.")
-                    self.intersection_state = 'PASSED'
-                return self._get_default_speed(all_vehicles, v_ego, 'PASSED_')
+        # --- 1.5 已经进入冲突区: 不再让行, 只负责尽快通过 ---
+        if is_in_intersection and not has_passed:
+            if self.intersection_state != 'IN_INTERSECTION':
+                print(f"  -> HV #{self.vehicle.vehicle_id} ENTERED intersection. Forcing GO through.")
+                self.intersection_state = 'IN_INTERSECTION'
+            # 在路口内部, 只做跟驰/自由流, 不再考虑 YIELD 逻辑, 避免在路口里被新车“吓停”
+            return self._get_default_speed(all_vehicles, v_ego, 'IN_INTERSECTION_')
 
-            if not is_in_perception_zone:
-                self.intersection_state = 'APPROACHING'
-                return self._get_default_speed(all_vehicles, v_ego, 'OUTSIDE_')
+        # --- 2. 状态机逻辑 ---
+        if has_passed:
+            if self.intersection_state != 'PASSED':
+                print(f"  -> HV #{self.vehicle.vehicle_id} PASSED intersection. Resetting state.")
+                self.intersection_state = 'PASSED'
+            return self._get_default_speed(all_vehicles, v_ego, 'PASSED_')
 
-            # 3. 在感知区内，逐步重决策
-            conflicting_rl_agent = self._find_conflicting_rl_agent(all_vehicles)
-            conflicting_hv = self._find_conflicting_priority_hv(all_vehicles)
+        if not is_in_perception_zone:
+            self.intersection_state = 'APPROACHING'
+            return self._get_default_speed(all_vehicles, v_ego, 'OUTSIDE_')
 
-            needs_to_yield = False
-            yield_reason = ""
+        # 3. 在感知区内，逐步重决策
+        conflicting_rl_agent = self._find_conflicting_rl_agent(all_vehicles)
+        conflicting_hv = self._find_conflicting_priority_hv(all_vehicles)
 
-            if conflicting_rl_agent and self.intent == 'YIELD':
+        needs_to_yield = False
+        yield_reason = ""
+
+        if conflicting_rl_agent and self.intent == 'YIELD':
+            needs_to_yield = True
+            yield_reason = 'YIELD_VIRTUAL_WALL (AV)'
+        
+        if not needs_to_yield and conflicting_hv:
+            if not self.vehicle.has_priority_over(conflicting_hv):
                 needs_to_yield = True
-                yield_reason = 'YIELD_VIRTUAL_WALL (AV)'
+                yield_reason = 'YIELD_HV'
+
+        # 3c. 执行
+        if needs_to_yield and is_at_trigger_point:
+            if self.intersection_state != 'YIELDING':
+                print(f"  -> HV #{self.vehicle.vehicle_id} starting to YIELD ({yield_reason}).")
+                self.intersection_state = 'YIELDING'
             
-            if not needs_to_yield and conflicting_hv:
-                if not self.vehicle.has_priority_over(conflicting_hv):
-                    needs_to_yield = True
-                    yield_reason = 'YIELD_HV'
-
-            # 3c. 执行
-            if needs_to_yield and is_at_trigger_point:
-                if self.intersection_state != 'YIELDING':
-                    print(f"  -> HV #{self.vehicle.vehicle_id} starting to YIELD ({yield_reason}).")
-                    self.intersection_state = 'YIELDING'
-                
-                # 让行逻辑（减速到 0），底层仍用统一模型
-                v_lead = 0.0
-                gap = dist_to_entry
+            # 先尝试对前车执行正常跟驰逻辑
+            lead_vehicle = self.vehicle.find_leader(all_vehicles)
+            if lead_vehicle:
+                v_lead = lead_vehicle.state['vx']
+                gap = (
+                    lead_vehicle.get_current_longitudinal_pos()
+                    - self.vehicle.get_current_longitudinal_pos()
+                    - lead_vehicle.length
+                )
                 target_speed = self.driver_model.get_target_speed(v_ego, v_lead, gap)
-                return {'speed': target_speed, 'reason': 'YIELDING_ACTIVE'}
+                return {
+                    'speed': target_speed,
+                    'reason': 'YIELDING_FOLLOW_LEADER'
+                }
 
+            # 如果前方没有车，才对虚拟停止线让行（头车停止在冲突区边缘）
+            v_lead_virtual = 0.0
+            gap_virtual = dist_to_entry
+            target_speed = self.driver_model.get_target_speed(v_ego, v_lead_virtual, gap_virtual)
+            return {
+                'speed': target_speed,
+                'reason': 'YIELDING_ACTIVE_VIRTUAL_WALL'
+            }
+
+        else:
+            if not needs_to_yield:
+                if self.intersection_state != 'GOING':
+                    print(f"  -> HV #{self.vehicle.vehicle_id} DECIDED to GO.")
+                    self.intersection_state = 'GOING'
+                reason_prefix = 'GOING_'
             else:
-                if not needs_to_yield:
-                    if self.intersection_state != 'GOING':
-                        print(f"  -> HV #{self.vehicle.vehicle_id} DECIDED to GO.")
-                        self.intersection_state = 'GOING'
-                    reason_prefix = 'GOING_'
-                else:
-                    self.intersection_state = 'DECIDING_TO_YIELD'
-                    reason_prefix = 'DECIDING_'
+                self.intersection_state = 'DECIDING_TO_YIELD'
+                reason_prefix = 'DECIDING_'
 
-                return self._get_default_speed(all_vehicles, v_ego, reason_prefix)
+            plan_info = self._get_default_speed(all_vehicles, v_ego, reason_prefix)
+            target_v = plan_info['speed']
+
+            return plan_info
 
 
 
