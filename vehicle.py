@@ -1429,18 +1429,50 @@ class RLVehicle(Vehicle):
         reward_components['total_reward'] = total_reward
         return reward_components
 
-    def calculate_cost(self):
-        """计算车辆当前位置的成本。
+    def _calculate_npc_potential(self, all_vehicles):
+        """计算由周围 NPC 车辆产生的势函数。"""
+        ego_pos = np.array([self.state['x'], self.state['y']])
+        npc_potential = 0.0
+        
+        # 定义关键参数
+        SAFE_MARGIN = 5.0       # 核心安全半径
+        BOUNDARY_COST = 10.0    # 在边界处(5m)的基础成本
+        COLLISION_FACTOR = 100.0 # 侵入安全区后的激增系数
 
-        成本是根据道路的势场地图（potential field map）来计算的，
-        用于在训练中引导智能体避开高风险区域。
+        for v in all_vehicles:
+            if v.vehicle_id == self.vehicle_id:
+                continue
 
-        Returns:
-            float: 当前位置的成本值。
-        """
-        potential = self.road.get_potential_at_point(self.state['x'], self.state['y'], self.target_route_str)
+            other_pos = np.array([v.state['x'], v.state['y']])
+            d = np.linalg.norm(ego_pos - other_pos)
 
-        return potential
+            if d < OBSERVATION_RADIUS:
+                dist_cost = 0.0
+                
+                if d < SAFE_MARGIN:
+                    # [核心修正] 内部成本 = 边界基础成本 + 侵入深度惩罚
+                    # 这样保证 d=2.99 时，成本肯定大于 10.0
+                    intrusion = SAFE_MARGIN - d
+                    dist_cost = BOUNDARY_COST + COLLISION_FACTOR * intrusion
+                else:
+                    # 外部成本：随着距离远离，从 BOUNDARY_COST 开始衰减
+                    # 当 d = SAFE_MARGIN 时，分母为1，结果正好是 BOUNDARY_COST
+                    dist_cost = BOUNDARY_COST / (d - SAFE_MARGIN + 1.0)
+
+                npc_potential += dist_cost
+
+        return npc_potential
+
+    def calculate_cost(self, all_vehicles):
+        """计算当前位置的总成本：地图势函数 + NPC 势函数。"""
+        # 地图势
+        map_potential = self.road.get_potential_at_point(
+            self.state['x'], self.state['y'], self.target_route_str
+        )
+        # NPC 势
+        npc_potential = self._calculate_npc_potential(all_vehicles)
+
+        return map_potential + npc_potential
 
     def _check_collision(self, all_vehicles):
         """检查智能体是否与任何其他车辆发生碰撞。
