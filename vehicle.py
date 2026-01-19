@@ -1342,7 +1342,7 @@ class RLVehicle(Vehicle):
         signed_error = np.sign(cross_product_z) * distances_to_path[current_path_index]
         return -signed_error
 
-    def calculate_reward(self, action, is_collision, is_baseline_agent):
+    def calculate_reward(self, action, is_collision, is_baseline_agent, all_vehicles):
         """计算当前时间步的奖励值。
 
         这是一个多目标奖励函数，旨在平衡驾驶的多个方面：
@@ -1411,7 +1411,7 @@ class RLVehicle(Vehicle):
 
         # --- PPO基准的成本惩罚 ---
         if is_baseline_agent:
-            cost = self.calculate_cost()
+            cost = self.calculate_cost(all_vehicles)
             reward_components['cost_penalty'] = -1.5 * cost
         else:
             reward_components['cost_penalty'] = 0
@@ -1573,7 +1573,7 @@ class RLVehicle(Vehicle):
 
         # 3. 计算奖励和新的观测值
         is_baseline = algo_name.startswith("ppo")
-        reward_info = self.calculate_reward(action, is_collision, is_baseline_agent=is_baseline)
+        reward_info = self.calculate_reward(action, is_collision, is_baseline_agent=is_baseline, all_vehicles=all_vehicles)
         total_reward = reward_info['total_reward'] # 直接从字典获取最终奖励
 
         # --- 5. 获取新的观测值 ---
@@ -1585,7 +1585,7 @@ class RLVehicle(Vehicle):
 
         
         # --- 6. 将本步的所有关键信息存入日志 ---
-        cost = self.calculate_cost()
+        cost = self.calculate_cost(all_vehicles)
         log_entry = {
             'step': self.steps_since_spawn,
             'action_accel': action[0],

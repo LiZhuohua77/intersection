@@ -82,7 +82,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train an agent for the traffic intersection environment.")
     
     # --- 实验与算法选择 ---
-    parser.add_argument("--algo", type=str, default="ppo_lagrangian_gru", 
+    parser.add_argument("--algo", type=str, default="sagi_ppo_mlp", 
                         choices=["sagi_ppo_mlp", "sagi_ppo_gru", "ppo_gru", "ppo_mlp", "ppo_lagrangian_gru", "ppo_lagrangian_mlp"], 
                         help="The reinforcement learning algorithm to use.")
     parser.add_argument("--n-envs", type=int, default=1, help="Number of parallel environments to use for training.")
