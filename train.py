@@ -41,6 +41,7 @@
 """
 
 import argparse
+import json
 import torch
 import time
 import gymnasium as gym
@@ -85,10 +86,25 @@ def parse_args():
     parser.add_argument("--algo", type=str, default="sagi_ppo_mlp", 
                         choices=["sagi_ppo_mlp", "sagi_ppo_gru", "ppo_gru", "ppo_mlp", "ppo_lagrangian_gru", "ppo_lagrangian_mlp"], 
                         help="The reinforcement learning algorithm to use.")
+    parser.add_argument(
+        "--scenario",
+        type=str,
+        default="mixed_traffic",
+        choices=["agent_only_simple", "crossing_conflict", "random_traffic", "mixed_traffic"],
+        help="Traffic scenario used for every training environment.",
+    )
     parser.add_argument("--n-envs", type=int, default=1, help="Number of parallel environments to use for training.")
     
     # --- 训练过程参数 ---
-    parser.add_argument("--total-timesteps", type=int, default=8_000_000, help="Total timesteps to train the agent.")
+    parser.add_argument(
+        "--total-timesteps",
+        type=int,
+        default=8_000_000,
+        help=(
+            "Target total number of environment timesteps. When --resume-from is "
+            "used, only the remaining timesteps up to this target are trained."
+        ),
+    )
     parser.add_argument("--save-freq", type=int, default=5_000_000, help="Save a checkpoint every N timesteps.")
 
     parser.add_argument("--n-steps", type=int, default=2048, help="Num steps to run for each env per rollout (buffer size).")
@@ -105,27 +121,79 @@ def parse_args():
 
     parser.add_argument("--initial-cost-limit", type=float, default=2400.0, help="Initial (high) cost limit for annealing.")
     parser.add_argument("--final-cost-limit", type=float, default=10.0, help="Final (target) cost limit after decay.")
-    parser.add_argument("--decay-start-step", type=int, default=5_000_000, help="Timestep at which the cost limit decay begins.")
+    parser.add_argument(
+        "--cost-warmup-fraction",
+        type=float,
+        default=0.10,
+        help="Fraction of training that holds the initial cost limit (default: 0.10).",
+    )
+    parser.add_argument(
+        "--cost-anneal-fraction",
+        type=float,
+        default=0.40,
+        help="Fraction of training used to linearly anneal to the final limit (default: 0.40).",
+    )
     parser.add_argument("--lambda-lr", type=float, default=0.035, help="Learning rate for the Lagrange multiplier lambda.")
     parser.add_argument("--cost-vf-coef", type=float, default=0.5, help="Coefficient for the cost value function loss.")
+
+    parser.add_argument(
+        "--tensorboard-log-dir",
+        type=str,
+        default="tf-logs",
+        help="Portable root directory for TensorBoard logs.",
+    )
+    parser.add_argument(
+        "--model-save-root",
+        type=str,
+        default="models/p0_1_retrain",
+        help="Root directory for checkpoints, final models, and training configuration.",
+    )
         
     parser.add_argument("--resume-from", type=str, default=None, help="Path to a .zip model file to resume training from.")
 
     return parser.parse_args()
 
+
+def apply_cost_schedule_config(model, args) -> None:
+    """Apply the approved three-stage cost schedule to a resumed model."""
+    model.initial_cost_limit = args.initial_cost_limit
+    model.final_cost_limit = args.final_cost_limit
+    model.cost_warmup_fraction = args.cost_warmup_fraction
+    model.cost_anneal_fraction = args.cost_anneal_fraction
+    model._validate_cost_schedule()
+
 def main():
     args = parse_args()
     set_seed(args.seed)
     
-    run_name = f"{args.algo}_{time.strftime('%Y%m%d-%H%M%S')}"
-    tb_log_root_dir = "/root/tf-logs/"
-    model_save_dir = f"models/{run_name}"
+    run_name = f"{args.scenario}_{args.algo}_{time.strftime('%Y%m%d-%H%M%S')}"
+    tb_log_root_dir = os.path.abspath(args.tensorboard_log_dir)
+    model_save_dir = os.path.abspath(
+        os.path.join(args.model_save_root, args.scenario, run_name)
+    )
+    os.makedirs(tb_log_root_dir, exist_ok=True)
     os.makedirs(model_save_dir, exist_ok=True)
+
+    training_config = vars(args).copy()
+    training_config["cost_final_hold_fraction"] = (
+        1.0 - args.cost_warmup_fraction - args.cost_anneal_fraction
+    )
+    training_config["run_name"] = run_name
+    with open(
+        os.path.join(model_save_dir, "training_config.json"),
+        "w",
+        encoding="utf-8",
+    ) as config_file:
+        json.dump(training_config, config_file, ensure_ascii=False, indent=2)
+
+    print(f"Scenario: {args.scenario}")
+    print(f"TensorBoard logs: {tb_log_root_dir}")
+    print(f"Model outputs: {model_save_dir}")
 
     # --- 1. [核心改进] 创建并行化的 Gym 环境 ---
     # 这是提升训练速度的关键
     env = make_vec_env(TrafficEnv, n_envs=args.n_envs, vec_env_cls=SubprocVecEnv,
-                       env_kwargs=dict(scenario='mixed_traffic'))
+                       env_kwargs=dict(scenario=args.scenario))
 
     # --- 2. [核心改进] 定义自定义策略网络参数 ---
     policy_kwargs = {}
@@ -185,33 +253,42 @@ def main():
             tensorboard_log=tb_log_root_dir
         )
     elif args.algo.startswith("ppo_lagrangian"):
-        print(f"--- Starting a new {args.algo.upper()} training run ---")
-        model = PPOLagrangian(
-            "MlpPolicy", 
-            env,
-            policy_kwargs=policy_kwargs,
-            # --- 传入所有 SAGI-PPO 的参数 ---
-            initial_cost_limit=args.initial_cost_limit,
-            final_cost_limit=args.final_cost_limit,
-            decay_start_step=args.decay_start_step,
-            lambda_lr=args.lambda_lr,
-            cost_vf_coef=args.cost_vf_coef,
-            # --- 传入所有 PPO 的参数 ---
-            learning_rate=args.lr,
-            n_steps=args.n_steps,
-            batch_size=args.batch_size,
-            n_epochs=args.n_epochs,
-            gamma=args.gamma,
-            gae_lambda=args.gae_lambda,
-            clip_range=args.clip_range,
-            seed=args.seed,
-            tensorboard_log=tb_log_root_dir,
-            verbose=1
-        )    
+        if args.resume_from:
+            print(f"--- Resuming {args.algo.upper()} training from {args.resume_from} ---")
+            model = PPOLagrangian.load(args.resume_from, env=env)
+            apply_cost_schedule_config(model, args)
+            resume_run_name = f"{run_name}_resume"
+            model.set_logger(configure(os.path.join(tb_log_root_dir, resume_run_name), ["stdout", "csv", "tensorboard"]))
+        else:
+            print(f"--- Starting a new {args.algo.upper()} training run ---")
+            model = PPOLagrangian(
+                "MlpPolicy", 
+                env,
+                policy_kwargs=policy_kwargs,
+                # --- 传入所有 SAGI-PPO 的参数 ---
+                initial_cost_limit=args.initial_cost_limit,
+                final_cost_limit=args.final_cost_limit,
+                cost_warmup_fraction=args.cost_warmup_fraction,
+                cost_anneal_fraction=args.cost_anneal_fraction,
+                lambda_lr=args.lambda_lr,
+                cost_vf_coef=args.cost_vf_coef,
+                # --- 传入所有 PPO 的参数 ---
+                learning_rate=args.lr,
+                n_steps=args.n_steps,
+                batch_size=args.batch_size,
+                n_epochs=args.n_epochs,
+                gamma=args.gamma,
+                gae_lambda=args.gae_lambda,
+                clip_range=args.clip_range,
+                seed=args.seed,
+                tensorboard_log=tb_log_root_dir,
+                verbose=1
+            )
     elif args.algo.startswith("sagi_ppo"):
         if args.resume_from:
             # 加载模型，SB3会自动处理好自定义类的恢复
             model = SAGIPPO.load(args.resume_from, env=env)
+            apply_cost_schedule_config(model, args)
             # 修改这一行，与PPO保持一致的日志结构
             resume_run_name = f"{run_name}_resume"
             model.set_logger(configure(os.path.join(tb_log_root_dir, resume_run_name), ["stdout", "csv", "tensorboard"]))
@@ -224,7 +301,8 @@ def main():
                 # SAGI-PPO 专属参数
                 initial_cost_limit=args.initial_cost_limit,
                 final_cost_limit=args.final_cost_limit,
-                decay_start_step=args.decay_start_step,
+                cost_warmup_fraction=args.cost_warmup_fraction,
+                cost_anneal_fraction=args.cost_anneal_fraction,
                 lambda_lr=args.lambda_lr,
                 cost_vf_coef=args.cost_vf_coef,
                 # 标准 PPO 参数
@@ -242,6 +320,24 @@ def main():
         pass
     else:
         raise ValueError(f"Unknown algorithm: {args.algo}")
+
+    starting_num_timesteps = int(model.num_timesteps)
+    learn_timesteps = args.total_timesteps - starting_num_timesteps
+    if learn_timesteps <= 0:
+        env.close()
+        raise ValueError(
+            f"The loaded model already has {starting_num_timesteps} timesteps, "
+            f"which is not below the requested target of {args.total_timesteps}."
+        )
+
+    training_config["starting_num_timesteps"] = starting_num_timesteps
+    training_config["learn_timesteps_this_run"] = learn_timesteps
+    with open(
+        os.path.join(model_save_dir, "training_config.json"),
+        "w",
+        encoding="utf-8",
+    ) as config_file:
+        json.dump(training_config, config_file, ensure_ascii=False, indent=2)
         
     # --- 4. [核心改进] 使用SB3的回调函数来保存检查点 ---
     checkpoint_callback = CheckpointCallback(
@@ -258,9 +354,12 @@ def main():
 
     # --- 5. [核心改进] 开始训练 ---
     # SB3的learn方法封装了所有复杂的训练循环
-    print(f"--- Starting training for {args.algo.upper()} ---")
+    print(
+        f"--- Starting training for {args.algo.upper()}: "
+        f"{starting_num_timesteps} -> {args.total_timesteps} timesteps ---"
+    )
     model.learn(
-        total_timesteps=args.total_timesteps,
+        total_timesteps=learn_timesteps,
         callback=callback_list,
         tb_log_name=run_name,
         reset_num_timesteps=(not args.resume_from)

@@ -1362,9 +1362,9 @@ class RLVehicle(Vehicle):
             dict: 一个包含所有奖励分量和总奖励的字典。
         """
         # --- 经过重新平衡的权重 ---
-        W_VELOCITY = 4.0          # 速度奖励权重（适当降低）
+        W_VELOCITY = 4.0          # 速度奖励权重
         VELOCITY_STD = 5.0
-        W_TIME = -0.1             # [关键] 必须设置一个负值，制造紧迫感
+        W_TIME = -0.1             
         W_ACTION_SMOOTH = -1    # 动作平滑度惩罚
         W_ENERGY = -0.01          # 能量消耗惩罚
         R_SUCCESS = 100.0         # 成功时给予巨大奖励
@@ -1382,7 +1382,7 @@ class RLVehicle(Vehicle):
 
         # --- 路径跟踪奖励 (核心修改) ---
         W_PATH = 1.0              # 路径跟踪权重
-        ALPHA = 0.5               # [关键] 横向误差敏感度 (从5.0大幅降低到0.5，拓宽“甜点区”)
+        ALPHA = 0.5               # 横向误差敏感度 
         BETA = 0.5                # 航向误差敏感度
 
         cte_sq = self.signed_cross_track_error**2

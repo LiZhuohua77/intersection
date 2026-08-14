@@ -66,6 +66,7 @@ class SAGIRolloutBuffer(RolloutBuffer):
         self.cost_values = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.cost_advantages = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.cost_returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.last_dones = np.zeros(self.n_envs, dtype=bool)
 
 
     def reset(self) -> None:
@@ -74,6 +75,7 @@ class SAGIRolloutBuffer(RolloutBuffer):
         self.cost_values = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.cost_advantages = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.cost_returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.last_dones = np.zeros(self.n_envs, dtype=bool)
 
     def add(self, cost: np.ndarray, cost_value: torch.Tensor, **kwargs) -> None:
         self.costs[self.pos] = np.array(cost).copy()
@@ -82,6 +84,7 @@ class SAGIRolloutBuffer(RolloutBuffer):
 
     def compute_returns_and_advantage(self, last_values: torch.Tensor, last_cost_values: torch.Tensor, dones: np.ndarray):
         super().compute_returns_and_advantage(last_values, dones)
+        self.last_dones = np.asarray(dones, dtype=bool).copy()
         last_cost_values = last_cost_values.clone().cpu().numpy().flatten()
         last_gae_lam = 0
         for step in reversed(range(self.buffer_size)):
@@ -97,42 +100,45 @@ class SAGIRolloutBuffer(RolloutBuffer):
         self.cost_returns = self.cost_advantages + self.cost_values
 
     def get_mean_episode_costs(self) -> float:
-            """
-            [CORRECTED VERSION]
-            Computes the mean of discounted costs for all completed episodes in the buffer.
-            """
-            episode_costs = []
-            # A running total of discounted costs for each environment
-            current_discounted_costs = np.zeros(self.n_envs)
-            
-            # Iterate backwards through the buffer
-            for step in reversed(range(self.buffer_size)):
-                # Create a boolean mask for environments where a new episode starts at this step
-                is_start_mask = self.episode_starts[step].astype(bool)
+        """Return the mean discounted cost of complete episodes in this rollout.
 
-                # If any episodes start here, it means episodes have just ended.
-                # Their total accumulated costs are in `current_discounted_costs`.
-                if np.any(is_start_mask):
-                    # Append the accumulated costs from the completed episodes to our list
-                    episode_costs.extend(current_discounted_costs[is_start_mask])
-                    # Reset the accumulator for those environments
-                    current_discounted_costs[is_start_mask] = 0.0
+        ``episode_starts[t, env]`` marks the first transition of a new episode.
+        A forward pass therefore closes the previous episode *before* adding the
+        cost at ``t``.  Prefixes that started before the rollout and unfinished
+        suffixes at the end of the rollout are excluded.  Episodes ending on the
+        final rollout transition are included through ``last_dones``.
+        """
+        episode_costs = []
+        running_costs = np.zeros(self.n_envs, dtype=np.float64)
+        discount_weights = np.ones(self.n_envs, dtype=np.float64)
+        has_observed_start = np.zeros(self.n_envs, dtype=bool)
 
-                # Accumulate the cost for the current step into the running total.
-                # This happens *after* we've potentially recorded and reset.
-                current_discounted_costs = self.costs[step] + self.gamma * current_discounted_costs
-            
-            # The loop misses the very first set of episodes that don't start with a 'True'
-            # in the buffer, but this is standard and acceptable. We only average full episodes.
-            
-            if not episode_costs:
-                warnings.warn(
-                    "No full episodes found in the rollout buffer. "
-                    "Consider increasing n_rollout_steps or Rewarding faster termination."
-                )
-                return 0.0
-            
-            return np.mean(episode_costs)
+        for step in range(self.buffer_size):
+            start_mask = self.episode_starts[step].astype(bool)
+            completed_mask = start_mask & has_observed_start
+
+            if np.any(completed_mask):
+                episode_costs.extend(running_costs[completed_mask].tolist())
+
+            if np.any(start_mask):
+                running_costs[start_mask] = 0.0
+                discount_weights[start_mask] = 1.0
+                has_observed_start[start_mask] = True
+
+            running_costs += discount_weights * self.costs[step]
+            discount_weights *= self.gamma
+
+        completed_at_rollout_end = self.last_dones & has_observed_start
+        if np.any(completed_at_rollout_end):
+            episode_costs.extend(running_costs[completed_at_rollout_end].tolist())
+
+        if not episode_costs:
+            raise RuntimeError(
+                "No complete episode was observed in the rollout buffer. "
+                "Increase n_steps so the expected episode length fits in one rollout."
+            )
+
+        return float(np.mean(episode_costs))
 
 # ==============================================================================
 # 3. SAGI-PPO 算法 (此部分已稳定，无需修改)
@@ -143,17 +149,57 @@ class SAGIPPO(PPO):
     def __init__(self, policy, env, 
                  initial_cost_limit: float = 500.0,
                  final_cost_limit: float = 30.0,
-                 decay_start_step: int = 5_000_000, 
+                 decay_start_step: Optional[int] = None,
+                 cost_warmup_fraction: float = 0.10,
+                 cost_anneal_fraction: float = 0.40,
                  lambda_lr: float = 0.035, cost_vf_coef: float = 0.5, **kwargs):
 
         self.initial_cost_limit = initial_cost_limit
         self.final_cost_limit = final_cost_limit
+        # Retained only so older checkpoints and the out-of-scope CPO class load.
         self.decay_start_step = decay_start_step
+        self.cost_warmup_fraction = cost_warmup_fraction
+        self.cost_anneal_fraction = cost_anneal_fraction
+        self._validate_cost_schedule()
         self.lambda_lr = lambda_lr
         self.cost_vf_coef = cost_vf_coef
         self.lambda_ = 0.0
         self.cost_limit = self.initial_cost_limit
         super().__init__(policy=policy, env=env, rollout_buffer_class=SAGIRolloutBuffer, **kwargs)
+
+    def _validate_cost_schedule(self) -> None:
+        if not 0.0 <= self.cost_warmup_fraction < 1.0:
+            raise ValueError("cost_warmup_fraction must be in [0, 1).")
+        if not 0.0 < self.cost_anneal_fraction <= 1.0:
+            raise ValueError("cost_anneal_fraction must be in (0, 1].")
+        if self.cost_warmup_fraction + self.cost_anneal_fraction > 1.0:
+            raise ValueError(
+                "cost_warmup_fraction + cost_anneal_fraction must not exceed 1."
+            )
+
+    def get_cost_limit(self, current_step: int, total_steps: int) -> Tuple[float, int]:
+        """Return the three-stage cost limit and its phase at ``current_step``.
+
+        Phase 0 keeps the initial limit during warm-up, phase 1 linearly
+        anneals to the final limit, and phase 2 holds the final limit.
+        """
+        if total_steps <= 0:
+            raise ValueError("total_steps must be positive.")
+
+        progress = float(np.clip(current_step / total_steps, 0.0, 1.0))
+        anneal_end = self.cost_warmup_fraction + self.cost_anneal_fraction
+
+        if progress <= self.cost_warmup_fraction:
+            return float(self.initial_cost_limit), 0
+        if progress < anneal_end:
+            anneal_progress = (
+                (progress - self.cost_warmup_fraction) / self.cost_anneal_fraction
+            )
+            cost_limit = self.initial_cost_limit + anneal_progress * (
+                self.final_cost_limit - self.initial_cost_limit
+            )
+            return float(cost_limit), 1
+        return float(self.final_cost_limit), 2
 
     def train(self) -> None:
         """
@@ -163,32 +209,21 @@ class SAGIPPO(PPO):
         """
         self.policy.set_training_mode(True)
         self._update_learning_rate(self.policy.optimizer)
-        # ==================== [新增] 非线性成本限制退火逻辑 ====================
+        # Three-stage cost curriculum: 10% warm-up, 40% linear annealing,
+        # followed by 50% training at the final cost limit.
         current_step = self.num_timesteps
-        decay_start = self.decay_start_step
-        total_steps = self._total_timesteps  # 从 PPO 基类获取总训练步数
+        total_steps = self._total_timesteps
+        current_cost_limit, schedule_phase = self.get_cost_limit(current_step, total_steps)
 
-        if current_step <= decay_start:
-            # 阶段一：在衰减开始前，保持高的初始值
-            current_cost_limit = self.initial_cost_limit
-        else:
-            # 阶段二：在衰减阶段，进行线性插值
-            # 计算在衰减阶段的进度比例 (从 0.0 到 1.0)
-            progress_in_decay_phase = (current_step - decay_start) / max(1, total_steps - decay_start)
-            progress_in_decay_phase = min(1.0, progress_in_decay_phase)  # 确保不超过1.0
-            
-            # 从 initial_cost_limit 线性插值到 final_cost_limit
-            current_cost_limit = self.initial_cost_limit + progress_in_decay_phase * (self.final_cost_limit - self.initial_cost_limit)
-        
-        # 更新 self.cost_limit 并记录到 TensorBoard
         self.cost_limit = current_cost_limit
         self.logger.record("sagi/current_cost_limit", self.cost_limit)
-        # =====================================================================
+        self.logger.record("sagi/cost_schedule_phase", schedule_phase)
 
         clip_range = self.clip_range(self._current_progress_remaining)
 
         j_c_k = self.rollout_buffer.get_mean_episode_costs()
         c = j_c_k - self.cost_limit
+        self.logger.record("sagi/empirical_discounted_cost", j_c_k)
 
         # ==================== 关键修正：调整执行顺序 ====================
         # 1. 首先，获取一次完整的批次数据。

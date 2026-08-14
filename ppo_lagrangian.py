@@ -41,7 +41,9 @@ class PPOLagrangian(SAGIPPO):
         # --- 复制 SAGIPPO 的所有参数以确保签名一致 ---
         initial_cost_limit: float = 500.0,
         final_cost_limit: float = 30.0,
-        decay_start_step: int = 5_000_000, 
+        decay_start_step: Optional[int] = None,
+        cost_warmup_fraction: float = 0.10,
+        cost_anneal_fraction: float = 0.40,
         lambda_lr: float = 0.035, 
         cost_vf_coef: float = 0.5,
         **kwargs,
@@ -55,6 +57,8 @@ class PPOLagrangian(SAGIPPO):
             initial_cost_limit=initial_cost_limit,
             final_cost_limit=final_cost_limit,
             decay_start_step=decay_start_step,
+            cost_warmup_fraction=cost_warmup_fraction,
+            cost_anneal_fraction=cost_anneal_fraction,
             lambda_lr=lambda_lr,
             cost_vf_coef=cost_vf_coef,
             **kwargs,
@@ -70,27 +74,22 @@ class PPOLagrangian(SAGIPPO):
         self.policy.set_training_mode(True)
         self._update_learning_rate(self.policy.optimizer)
 
-        # --- 1. [PPO-L] 更新成本限制 (与 SAGI-PPO 相同) ---
+        # --- 1. [PPO-L] 使用与 SAGI-PPO 完全相同的三阶段成本日程 ---
         current_step = self.num_timesteps
-        decay_start = self.decay_start_step
         total_steps = self._total_timesteps
-
-        if current_step <= decay_start:
-            current_cost_limit = self.initial_cost_limit
-        else:
-            progress_in_decay_phase = (current_step - decay_start) / max(1, total_steps - decay_start)
-            progress_in_decay_phase = min(1.0, progress_in_decay_phase)
-            current_cost_limit = self.initial_cost_limit + progress_in_decay_phase * (self.final_cost_limit - self.initial_cost_limit)
+        current_cost_limit, schedule_phase = self.get_cost_limit(current_step, total_steps)
         
         self.cost_limit = current_cost_limit
         # (日志记录前缀改为 'train/' 以便与 SAGI-PPO 的 'sagi/' 区分)
         self.logger.record("train/current_cost_limit", self.cost_limit)
+        self.logger.record("train/cost_schedule_phase", schedule_phase)
 
         clip_range = self.clip_range(self._current_progress_remaining)
 
         # --- 2. [PPO-L] 计算成本盈余 'c' (与 SAGI-PPO 相同) ---
         j_c_k = self.rollout_buffer.get_mean_episode_costs()
         c = j_c_k - self.cost_limit
+        self.logger.record("train/empirical_discounted_cost", j_c_k)
 
         # --- 3. [PPO-L] 更新 Lambda (原对偶梯度上升) ---
         # (这在 SAGI-PPO 中是在 A-B-C 逻辑之后做的)

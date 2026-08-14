@@ -240,7 +240,7 @@ def plot_experiment(expt_name, algo_curves, out_dir):
 def main():
     # 假设脚本在 intersection/
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    models_dir = os.path.join(base_dir, "models")
+    models_dir = os.path.join(base_dir, "models/new")
     export_root = os.path.join(base_dir, "exported")
 
     for expt in EXPERIMENTS:
@@ -259,15 +259,6 @@ def main():
 
             try:
                 steps, rewards, _ = load_scalar_from_tb(logdir)
-
-                # --------- 只对实验三做截断 -----------
-                if expt == "expt3":
-                    mask = steps <= 3.5e7
-                    steps = steps[mask]
-                    rewards = rewards[mask]
-                # ------------------------------------
-
-                # 保存 CSV（截断后再保存）
                 csv_dir = os.path.join(export_root, expt, "csv")
                 save_to_csv(steps, rewards, os.path.join(csv_dir, f"{algo}.csv"))
 

@@ -83,6 +83,18 @@ def parse_args():
         choices=["agent_only_simple", "random_traffic", "crossing_conflict", "mixed_traffic"],
         help="Evaluation scenario name in TrafficEnv/TrafficManager.",
     )
+    parser.add_argument(
+        "--cost-budget",
+        type=float,
+        default=10.0,
+        help="Final CMDP discounted-cost budget used for feasibility reporting.",
+    )
+    parser.add_argument(
+        "--gamma",
+        type=float,
+        default=None,
+        help="Optional discount override; defaults to the loaded model gamma.",
+    )
     return parser.parse_args()
 
 
@@ -271,8 +283,6 @@ def main():
     set_seed(args.seed)
     print(f"--- Setting random seed to {args.seed} ---")
 
-    GAMMA = 0.99  # 与训练时保持一致
-
     # 2. 创建环境
     env = TrafficEnv(scenario=args.scenario)
     env.reset(seed=args.seed)
@@ -302,6 +312,8 @@ def main():
         print("请确保模型是由 Stable Baselines3 保存的 .zip 文件，并且代码版本一致。")
         return
 
+    evaluation_gamma = float(args.gamma if args.gamma is not None else model.gamma)
+
     # 4. 日志目录
     model_name = os.path.splitext(os.path.basename(args.model_path))[0]
     log_save_dir = os.path.join(
@@ -318,6 +330,8 @@ def main():
         f.write(f"Episodes: {args.num_episodes}\n")
         f.write(f"Seed: {args.seed}\n")
         f.write(f"Scenario: {args.scenario}\n")
+        f.write(f"Discount Factor: {evaluation_gamma}\n")
+        f.write(f"Final Cost Budget: {args.cost_budget}\n")
     print(f"Evaluation configuration saved to {eval_config_path}")
 
     # 5. 全局统计
@@ -367,7 +381,7 @@ def main():
             episode_reward += reward
             episode_cost += step_cost
             episode_len += 1
-            episode_discounted_cost += (GAMMA ** (episode_len - 1)) * step_cost
+            episode_discounted_cost += (evaluation_gamma ** (episode_len - 1)) * step_cost
 
             done = terminated or truncated
             if done:
@@ -399,9 +413,26 @@ def main():
         summary_lines.append(
             f"平均奖励: {np.mean(eval_stats['rewards']):.2f} ± {np.std(eval_stats['rewards']):.2f}"
         )
+        raw_costs = np.asarray(eval_stats["costs"], dtype=np.float64)
+        discounted_costs = np.asarray(eval_stats["discounted_costs"], dtype=np.float64)
+        mean_discounted_cost = float(np.mean(discounted_costs))
+        mean_cost_surplus = mean_discounted_cost - args.cost_budget
+        episode_feasibility_rate = float(np.mean(discounted_costs <= args.cost_budget))
         summary_lines.append(
-            f"平均回合成本: {np.mean(eval_stats['costs']):.2f} ± {np.std(eval_stats['costs']):.2f}"
+            f"平均未折扣回合成本: {np.mean(raw_costs):.2f} ± {np.std(raw_costs):.2f}"
         )
+        summary_lines.append(
+            f"平均 CMDP 折扣成本 J_C (gamma={evaluation_gamma:g}): "
+            f"{mean_discounted_cost:.2f} ± {np.std(discounted_costs):.2f}"
+        )
+        summary_lines.append(
+            f"平均成本盈余 J_C-d (d={args.cost_budget:g}): {mean_cost_surplus:.2f}"
+        )
+        summary_lines.append(
+            "经验期望成本约束是否满足: "
+            f"{'是' if mean_discounted_cost <= args.cost_budget else '否'}"
+        )
+        summary_lines.append(f"回合级预算满足率: {episode_feasibility_rate:.2%}")
         summary_lines.append(f"平均通行时间 (秒): {avg_travel_time:.2f}")
         summary_lines.append(
             f"平均加加速度 (m/s^3): {np.mean(eval_stats.get('avg_jerk', [0])):.2f}"

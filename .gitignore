@@ -17,3 +17,11 @@ models/附件2：2025年华北五省（市、自治区）大学生机器人大�
 evaluate.py
 *.tfevents.*
 unet.py
+chuli.py
+I0.xlsx
+laser frequency.xlsx
+item2bib.py
+huatu.py
+references_output.bib
+evaluate_unet.py
+etalon_data_generated.xlsx
