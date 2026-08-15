@@ -1,5 +1,20 @@
-pygame
-numpy
-scipy
-matplotlib  # Optional, for plotting if needed
-```
+# Reproducible runtime for P0-1 training and evaluation.
+# Use Python 3.9 or 3.10 with an NVIDIA driver compatible with CUDA 11.8.
+--extra-index-url https://download.pytorch.org/whl/cu118
+
+torch==2.6.0+cu118
+gymnasium==1.1.1
+stable-baselines3==2.6.0
+
+numpy==1.26.4
+scipy==1.10.1
+pandas==1.5.1
+casadi==3.7.0
+
+pygame==2.1.0
+matplotlib==3.7.2
+tensorboard==2.16.2
+tqdm==4.64.1
+
+# Optional: cpo.py additionally imports omnisafe. It is not used by the
+# train.py P0-1 matrix and is intentionally excluded from this environment.
