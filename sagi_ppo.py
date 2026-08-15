@@ -1,6 +1,6 @@
 import warnings
 # [关键修正] 从 typing 模块导入 Generator 和 Tuple
-from typing import Any, Dict, Optional, Type, Union, Generator, Tuple
+from typing import Any, Dict, Optional, Type, Union, Generator, NamedTuple, Tuple
 
 import numpy as np
 import torch
@@ -11,7 +11,7 @@ import torch as th
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.policies import ActorCriticPolicy
-from stable_baselines3.common.buffers import RolloutBuffer, RolloutBufferSamples
+from stable_baselines3.common.buffers import RolloutBuffer
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.utils import obs_as_tensor
 from stable_baselines3.common.torch_layers import create_mlp
@@ -59,6 +59,17 @@ class ActorCriticCostPolicy(ActorCriticPolicy):
 # ==============================================================================
 # 2. 自定义经验缓冲区 (对 get 方法的类型标注进行修正)
 # ==============================================================================
+class SAGIRolloutBufferSamples(NamedTuple):
+    observations: torch.Tensor
+    actions: torch.Tensor
+    old_values: torch.Tensor
+    old_log_prob: torch.Tensor
+    advantages: torch.Tensor
+    returns: torch.Tensor
+    cost_advantages: torch.Tensor
+    cost_returns: torch.Tensor
+
+
 class SAGIRolloutBuffer(RolloutBuffer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -98,6 +109,57 @@ class SAGIRolloutBuffer(RolloutBuffer):
             last_gae_lam = delta + self.gamma * self.gae_lambda * next_non_terminal * last_gae_lam
             self.cost_advantages[step] = last_gae_lam
         self.cost_returns = self.cost_advantages + self.cost_values
+
+    def prepare_for_sampling(self) -> None:
+        """Flatten reward and cost arrays once using the same env-major order."""
+        if self.generator_ready:
+            return
+
+        tensor_names = [
+            "observations",
+            "actions",
+            "values",
+            "log_probs",
+            "advantages",
+            "returns",
+            "cost_advantages",
+            "cost_returns",
+        ]
+        for tensor_name in tensor_names:
+            self.__dict__[tensor_name] = self.swap_and_flatten(self.__dict__[tensor_name])
+        self.generator_ready = True
+
+    def get(self, batch_size: Optional[int] = None) -> Generator[SAGIRolloutBufferSamples, None, None]:
+        """Yield aligned reward/cost samples without moving the full rollout to the device."""
+        assert self.full, ""
+        total_samples = self.buffer_size * self.n_envs
+        indices = np.random.permutation(total_samples)
+        self.prepare_for_sampling()
+
+        if batch_size is None:
+            batch_size = total_samples
+
+        start_idx = 0
+        while start_idx < total_samples:
+            yield self._get_samples(indices[start_idx : start_idx + batch_size])
+            start_idx += batch_size
+
+    def _get_samples(
+        self,
+        batch_inds: np.ndarray,
+        env: Optional[VecNormalize] = None,
+    ) -> SAGIRolloutBufferSamples:
+        data = (
+            self.observations[batch_inds],
+            self.actions[batch_inds],
+            self.values[batch_inds].flatten(),
+            self.log_probs[batch_inds].flatten(),
+            self.advantages[batch_inds].flatten(),
+            self.returns[batch_inds].flatten(),
+            self.cost_advantages[batch_inds].flatten(),
+            self.cost_returns[batch_inds].flatten(),
+        )
+        return SAGIRolloutBufferSamples(*tuple(map(self.to_torch, data)))
 
     def get_mean_episode_costs(self) -> float:
         """Return the mean discounted cost of complete episodes in this rollout.
@@ -201,6 +263,65 @@ class SAGIPPO(PPO):
             return float(cost_limit), 1
         return float(self.final_cost_limit), 2
 
+    def _compute_gradient_inner_product(self, clip_range: float) -> Tuple[float, int]:
+        """Compute the full-rollout reward/cost gradient dot product in bounded chunks.
+
+        Each chunk gradient is weighted by its share of rollout samples, so the
+        accumulated gradients equal the gradients of the original full-batch
+        mean losses without constructing a full-batch CUDA tensor.
+        """
+        total_samples = self.rollout_buffer.buffer_size * self.n_envs
+        gradient_batch_size = min(total_samples, max(self.batch_size, 1024))
+        parameters = tuple(
+            parameter for parameter in self.policy.parameters() if parameter.requires_grad
+        )
+        reward_gradients = [torch.zeros_like(parameter) for parameter in parameters]
+        cost_gradients = [torch.zeros_like(parameter) for parameter in parameters]
+
+        for rollout_data in self.rollout_buffer.get(gradient_batch_size):
+            _, _, log_prob, _ = self.policy.evaluate_actions(
+                rollout_data.observations, rollout_data.actions
+            )
+            ratio = torch.exp(log_prob - rollout_data.old_log_prob)
+            clipped_ratio = torch.clamp(ratio, 1 - clip_range, 1 + clip_range)
+
+            reward_advantages = rollout_data.advantages.flatten()
+            cost_advantages = rollout_data.cost_advantages.flatten()
+            reward_surrogate_loss = -torch.min(
+                reward_advantages * ratio,
+                reward_advantages * clipped_ratio,
+            ).mean()
+            cost_surrogate_loss = -torch.min(
+                cost_advantages * ratio,
+                cost_advantages * clipped_ratio,
+            ).mean()
+
+            reward_chunk_gradients = torch.autograd.grad(
+                reward_surrogate_loss,
+                parameters,
+                retain_graph=True,
+                allow_unused=True,
+            )
+            cost_chunk_gradients = torch.autograd.grad(
+                cost_surrogate_loss,
+                parameters,
+                allow_unused=True,
+            )
+            chunk_weight = reward_advantages.numel() / total_samples
+
+            for accumulated, gradient in zip(reward_gradients, reward_chunk_gradients):
+                if gradient is not None:
+                    accumulated.add_(gradient.detach(), alpha=chunk_weight)
+            for accumulated, gradient in zip(cost_gradients, cost_chunk_gradients):
+                if gradient is not None:
+                    accumulated.add_(gradient.detach(), alpha=chunk_weight)
+
+        inner_product = sum(
+            torch.sum(reward_gradient * cost_gradient)
+            for reward_gradient, cost_gradient in zip(reward_gradients, cost_gradients)
+        )
+        return float(inner_product.item()), gradient_batch_size
+
     def train(self) -> None:
         """
         [最终修正]
@@ -225,40 +346,15 @@ class SAGIPPO(PPO):
         c = j_c_k - self.cost_limit
         self.logger.record("sagi/empirical_discounted_cost", j_c_k)
 
-        # ==================== 关键修正：调整执行顺序 ====================
-        # 1. 首先，获取一次完整的批次数据。
-        #    这一步会触发 get() 内部的 flatten 逻辑，将 self.advantages 等数组的形状变为 (4096, 1)
-        full_batch_generator = self.rollout_buffer.get(batch_size=self.rollout_buffer.buffer_size * self.n_envs)
-        full_batch = next(full_batch_generator)
-
-        # 2. 现在，self.rollout_buffer.advantages 已经是被 flatten 后的正确形状了，我们再复制它。
+        # Flatten reward and cost data together so every later permutation stays aligned.
+        self.rollout_buffer.prepare_for_sampling()
         original_advantages = self.rollout_buffer.advantages.copy()
+        cost_adv_for_update = self.rollout_buffer.cost_advantages
 
-        # 3. 手动 flatten 我们的自定义数组，使其形状与 original_advantages 保持完全一致。
-        cost_advantages_flat = self.rollout_buffer.cost_advantages.swapaxes(0, 1).reshape(-1, 1)
-        cost_returns_flat = self.rollout_buffer.cost_returns.swapaxes(0, 1).reshape(-1, 1)
-        
-        # 4. 现在两个数组的形状都是 (4096, 1)，可以安全地进行运算。
-        cost_adv_for_update = cost_advantages_flat
-        # ===============================================================
-
-        # --- 计算梯度内积 p ---
-        # 我们已经获取了 full_batch，可以直接使用
-        reward_advantages_p = torch.as_tensor(original_advantages, device=self.device).flatten()
-        cost_advantages_p = torch.as_tensor(cost_adv_for_update, device=self.device).flatten()
-        
+        # Compute p over the complete rollout, but keep CUDA allocations bounded.
         self.policy.train()
-        _, _, log_prob, _ = self.policy.evaluate_actions(full_batch.observations, full_batch.actions)
-        ratio = torch.exp(log_prob - full_batch.old_log_prob)
-        
-        reward_surrogate_loss = -torch.min(reward_advantages_p * ratio, reward_advantages_p * torch.clamp(ratio, 1 - clip_range, 1 + clip_range)).mean()
-        cost_surrogate_loss = -torch.min(cost_advantages_p * ratio, cost_advantages_p * torch.clamp(ratio, 1 - clip_range, 1 + clip_range)).mean()
-        
-        g_r_tensors = torch.autograd.grad(reward_surrogate_loss, self.policy.parameters(), retain_graph=True, allow_unused=True)
-        g_r_flat = torch.cat([grad.flatten() for grad in g_r_tensors if grad is not None])
-        g_c_tensors = torch.autograd.grad(cost_surrogate_loss, self.policy.parameters(), retain_graph=False, allow_unused=True)
-        g_c_flat = torch.cat([grad.flatten() for grad in g_c_tensors if grad is not None])
-        p = torch.dot(g_r_flat, g_c_flat).item() if g_r_flat.numel() > 0 and g_c_flat.numel() > 0 else 0.0
+        p, gradient_batch_size = self._compute_gradient_inner_product(clip_range)
+        self.logger.record("sagi/gradient_batch_size", gradient_batch_size)
         
         self.logger.record("sagi/cost_surplus_c", c)
         self.logger.record("sagi/grad_inner_product_p", p)
@@ -279,7 +375,6 @@ class SAGIPPO(PPO):
 
         # --- PPO 小批次更新循环 ---
         # 再次调用 get() 时，由于 generator_ready=True，它会直接从已 flatten 的数据中创建小批次
-        current_batch_start_idx = 0
         for rollout_data in self.rollout_buffer.get(self.batch_size):
             reward_values, cost_values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, rollout_data.actions)
             advantages = rollout_data.advantages
@@ -289,13 +384,8 @@ class SAGIPPO(PPO):
             ratio = torch.exp(log_prob - rollout_data.old_log_prob)
             policy_loss = -torch.min(advantages * ratio, advantages * torch.clamp(ratio, 1 - clip_range, 1 + clip_range)).mean()
             
-            batch_size = rollout_data.observations.shape[0]
-            # 手动切片获取对应的小批次成本回报
-            cost_returns_batch = cost_returns_flat[current_batch_start_idx : current_batch_start_idx + batch_size]
-            current_batch_start_idx += batch_size
-
             value_loss = F.mse_loss(rollout_data.returns, reward_values.flatten())
-            cost_value_loss = F.mse_loss(torch.as_tensor(cost_returns_batch, device=self.device).flatten(), cost_values.flatten())
+            cost_value_loss = F.mse_loss(rollout_data.cost_returns, cost_values.flatten())
             
             entropy_loss = -torch.mean(entropy) if entropy is not None else 0.0
             loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss + self.cost_vf_coef * cost_value_loss

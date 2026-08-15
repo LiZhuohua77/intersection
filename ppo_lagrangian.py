@@ -99,12 +99,10 @@ class PPOLagrangian(SAGIPPO):
         self.logger.record("train/lambda", self.lambda_)
         
         # --- 4. [PPO-L] 准备数据缓冲区 (与 SAGI-PPO 相同) ---
-        # (复制您在 SAGI-PPO.train() 中的形状修正逻辑)
-        full_batch_generator = self.rollout_buffer.get(batch_size=self.rollout_buffer.buffer_size * self.n_envs)
-        full_batch = next(full_batch_generator)
+        # Reward and cost arrays are flattened together and sampled with one permutation.
+        self.rollout_buffer.prepare_for_sampling()
         original_advantages = self.rollout_buffer.advantages.copy() # (A_R)
-        cost_advantages_flat = self.rollout_buffer.cost_advantages.swapaxes(0, 1).reshape(-1, 1) # (A_C)
-        cost_returns_flat = self.rollout_buffer.cost_returns.swapaxes(0, 1).reshape(-1, 1) # (V_C_target)
+        cost_advantages_flat = self.rollout_buffer.cost_advantages # (A_C)
 
         # --- 5. [PPO-L] 计算拉格朗日优势 (强制 Case B) ---
         # (移除了 SAGI-PPO 的 'p' 计算和 'if/elif/else' 逻辑)
@@ -112,7 +110,6 @@ class PPOLagrangian(SAGIPPO):
         self.rollout_buffer.advantages = (original_advantages - self.lambda_ * cost_advantages_flat) / (1 + self.lambda_)
 
         # --- 6. [PPO-L] PPO 小批次更新循环 (与 SAGI-PPO 相同) ---
-        current_batch_start_idx = 0
         for rollout_data in self.rollout_buffer.get(self.batch_size):
             # (以下代码从 SAGI-PPO.train() 复制而来, 确保更新逻辑一致)
             reward_values, cost_values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, rollout_data.actions)
@@ -125,13 +122,8 @@ class PPOLagrangian(SAGIPPO):
             ratio = torch.exp(log_prob - rollout_data.old_log_prob)
             policy_loss = -torch.min(advantages * ratio, advantages * torch.clamp(ratio, 1 - clip_range, 1 + clip_range)).mean()
             
-            batch_size = rollout_data.observations.shape[0]
-            # 手动切片获取对应的小批次成本回报
-            cost_returns_batch = cost_returns_flat[current_batch_start_idx : current_batch_start_idx + batch_size]
-            current_batch_start_idx += batch_size
-
             value_loss = F.mse_loss(rollout_data.returns, reward_values.flatten())
-            cost_value_loss = F.mse_loss(torch.as_tensor(cost_returns_batch, device=self.device).flatten(), cost_values.flatten())
+            cost_value_loss = F.mse_loss(rollout_data.cost_returns, cost_values.flatten())
             
             entropy_loss = -torch.mean(entropy) if entropy is not None else 0.0
             
