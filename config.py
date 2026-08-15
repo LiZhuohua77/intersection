@@ -99,7 +99,29 @@ ACC_PARAMS = {
 INTERACTION_ZONE_RADIUS = 60.0  # 交叉口交互区域的半径 (米)
 
 # === 6. [修改] 强化学习智能体与观测空间参数 ===
-MAX_VEHICLES = 2
+# Default capacity for traffic-heavy scenarios. Scenario-specific limits below
+# make the experimental setup explicit while keeping this value for callers
+# that construct TrafficManager directly.
+MAX_VEHICLES = 10
+
+SCENARIO_MAX_VEHICLES = {
+    "agent_only_simple": 1,
+    "crossing_conflict": 2,
+    "random_traffic": 10,
+    "mixed_traffic": 10,
+    "background_only": 10,
+}
+
+# Number of background vehicles requested when a scenario is reset. Vehicles
+# may be fewer if a sampled spawn point is occupied; dynamic traffic then keeps
+# S3/S4 populated up to the scenario capacity.
+SCENARIO_INITIAL_HVS = {
+    "agent_only_simple": (0, 0),
+    "crossing_conflict": (1, 1),
+    "random_traffic": (1, 3),
+    "mixed_traffic": (2, 5),
+    "background_only": (3, 6),
+}
 # Agent 物理极限
 MAX_ACCELERATION = 3.0
 MAX_STEERING_ANGLE = np.deg2rad(30.0) # 修正: 原有MPC和Agent参数中都有定义，统一在此

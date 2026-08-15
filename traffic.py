@@ -49,13 +49,7 @@ class TrafficManager:
         self.vehicles = []
         self.default_max_vehicles = max_vehicles
         self.max_vehicles = max_vehicles
-        self.scenario_max_vehicles = {
-            "agent_only_simple": 1,     
-            "crossing_conflict": 2,
-            "random_traffic": max_vehicles,
-            "mixed_traffic": max_vehicles,
-            "background_only": max_vehicles
-        }
+        self.scenario_max_vehicles = dict(SCENARIO_MAX_VEHICLES)
         self.vehicle_id_counter = 1
         self.completed_vehicles_data = []
         self.current_scenario = 'random_traffic'
@@ -234,6 +228,32 @@ class TrafficManager:
         except ValueError as e:
             print(f"无法生成RL Agent: {e}")
             return None
+
+    def _restore_minimum_background_vehicles(self, minimum_hvs, mixed_traffic=False):
+        """Safely restore the minimum background traffic after an agent fallback."""
+        spawned_hvs = 0
+        max_attempts = max(20, minimum_hvs * 20)
+
+        for _ in range(max_attempts):
+            if spawned_hvs >= minimum_hvs:
+                break
+
+            start = random.choice(['north', 'south', 'east', 'west'])
+            if not self.can_spawn_vehicle(start):
+                continue
+
+            driver_type = "IDM"
+            if mixed_traffic:
+                driver_type = "ACC" if random.random() < self.acc_ratio else "IDM"
+
+            if self.spawn_vehicle(start, driver_type=driver_type) is not None:
+                spawned_hvs += 1
+
+        if spawned_hvs < minimum_hvs:
+            print(
+                f"Warning: restored only {spawned_hvs}/{minimum_hvs} "
+                "minimum background vehicles after agent fallback."
+            )
         
     def update_background_traffic(self, dt: float):
 
@@ -418,7 +438,8 @@ class TrafficManager:
 
         elif scenario_name == "random_traffic":
             # AV随机路线，并预先生成1-3辆随机HV，后续动态生成更多
-            for _ in range(random.randint(1, 3)):
+            min_hvs, max_hvs = SCENARIO_INITIAL_HVS["random_traffic"]
+            for _ in range(random.randint(min_hvs, max_hvs)):
                 start = random.choice(['north', 'south', 'east', 'west'])
                 self.spawn_vehicle(start)
 
@@ -436,10 +457,12 @@ class TrafficManager:
                 start_dir = random.choice(['north', 'south', 'east', 'west'])
                 end_dir = self.get_random_destination(start_dir)
                 agent = self.spawn_rl_agent(start_dir, end_dir)
+                self._restore_minimum_background_vehicles(min_hvs)
 
         elif scenario_name == "mixed_traffic":
             # 预先生成 2~5 辆混合的 IDM/ACC 车辆
-            num_init_hv = random.randint(2, 5)
+            min_hvs, max_hvs = SCENARIO_INITIAL_HVS["mixed_traffic"]
+            num_init_hv = random.randint(min_hvs, max_hvs)
             for _ in range(num_init_hv):
                 start = random.choice(['north', 'south', 'east', 'west'])
                 driver_type = "ACC" if random.random() < self.acc_ratio else "IDM"
@@ -459,12 +482,17 @@ class TrafficManager:
                 start_dir = random.choice(['north', 'south', 'east', 'west'])
                 end_dir = self.get_random_destination(start_dir)
                 agent = self.spawn_rl_agent(start_dir, end_dir)
+                self._restore_minimum_background_vehicles(
+                    min_hvs,
+                    mixed_traffic=True,
+                )
 
         elif scenario_name == "background_only":
             print("初始化纯背景交通场景 (无 RL Agent)...")
             # 随机生成一些初始车辆，让场景一开始不至于太冷清
             # 数量在 3 到 max_vehicles 之间随机，或者固定一个数量
-            num_init_hv = random.randint(3, 6)
+            min_hvs, max_hvs = SCENARIO_INITIAL_HVS["background_only"]
+            num_init_hv = random.randint(min_hvs, max_hvs)
             for _ in range(num_init_hv):
                 start = random.choice(['north', 'south', 'east', 'west'])
                 # 随机混合 ACC 和 IDM
