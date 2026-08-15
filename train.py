@@ -66,6 +66,11 @@ from ppo_lagrangian import PPOLagrangian
 import pandas as pd
 import os
 
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_TENSORBOARD_LOG_DIR = os.path.abspath(
+    os.path.join(PROJECT_DIR, os.pardir, "tf-logs")
+)
+
 def set_seed(seed):
     """设置所有可能的随机种子，确保实验可重复"""
     random.seed(seed)
@@ -139,8 +144,8 @@ def parse_args():
     parser.add_argument(
         "--tensorboard-log-dir",
         type=str,
-        default="tf-logs",
-        help="Portable root directory for TensorBoard logs.",
+        default=DEFAULT_TENSORBOARD_LOG_DIR,
+        help="TensorBoard log root (default: the tf-logs directory beside intersection).",
     )
     parser.add_argument(
         "--model-save-root",
