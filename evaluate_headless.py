@@ -165,9 +165,10 @@ def handle_episode_end(
                 if len(jerks) > 0:
                     avg_jerk = float(np.mean(jerks))
 
-        # sCTE（这里是有符号平均值；如果想要 |sCTE| 可以改成 np.mean(np.abs(...))）
+        # Mean absolute sCTE is comparable across routes and does not cancel
+        # left/right deviations.
         if "signed_cross_track_error" in log_df.columns:
-            avg_scte = float(log_df["signed_cross_track_error"].mean())
+            avg_scte = float(np.mean(np.abs(log_df["signed_cross_track_error"])))
 
         # 能耗：raw_power 为瞬时电功率(kW) -> 积分得到电能(kWh)
         if "raw_power" in log_df.columns:
@@ -359,8 +360,9 @@ def main():
     for ep in range(1, args.num_episodes + 1):
         reset_options = {
             "scenario": args.scenario,
-            "algo": args.algo,
-            # 不再指定 HV 性格/意图，让 TrafficManager 完全随机
+            # Keep the reward definition identical across constrained methods.
+            # Safety cost is measured separately and must not be folded into
+            # PPO-Lagrangian's evaluation reward only.
         }
         state, info = env.reset(seed=args.seed + ep, options=reset_options)
 
@@ -438,7 +440,7 @@ def main():
             f"平均加加速度 (m/s^3): {np.mean(eval_stats.get('avg_jerk', [0])):.2f}"
         )
         summary_lines.append(
-            f"平均 sCTE (米): {np.mean(eval_stats.get('avg_scte', [0])):.2f}"
+            f"平均 |sCTE| (米): {np.mean(eval_stats.get('avg_scte', [0])):.2f}"
         )
 
         # 能耗汇总

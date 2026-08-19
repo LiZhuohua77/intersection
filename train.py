@@ -71,6 +71,15 @@ DEFAULT_TENSORBOARD_LOG_DIR = os.path.abspath(
     os.path.join(PROJECT_DIR, os.pardir, "tf-logs")
 )
 
+# Experiment-1 limits are calibrated from the five-seed warm-up data:
+# pooled P99 = 617.54 and observed maximum = 627.77.  The rounded 650 limit
+# starts the linear curriculum just above that distribution, while 8 leaves a
+# two-point training margin below the reporting threshold of 10.
+SCENARIO_COST_LIMIT_DEFAULTS = {
+    "agent_only_simple": (650.0, 8.0),
+}
+FALLBACK_COST_LIMITS = (2400.0, 10.0)
+
 def set_seed(seed):
     """设置所有可能的随机种子，确保实验可重复"""
     random.seed(seed)
@@ -113,8 +122,14 @@ def parse_args():
     parser.add_argument("--save-freq", type=int, default=5_000_000, help="Save a checkpoint every N timesteps.")
 
     parser.add_argument("--n-steps", type=int, default=2048, help="Num steps to run for each env per rollout (buffer size).")
-    parser.add_argument("--batch-size", type=int, default=64, help="Minibatch size for each update.")
+    parser.add_argument("--batch-size", type=int, default=512, help="Minibatch size for each update.")
     parser.add_argument("--n-epochs", type=int, default=10, help="Number of epochs to update the policy per rollout.")
+    parser.add_argument(
+        "--target-kl",
+        type=float,
+        default=0.03,
+        help="Stop a PPO update early when approximate KL exceeds 1.5 times this value.",
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")
 
     parser.add_argument("--lr", type=float, default=3e-5, help="Learning rate for the optimizers.")
@@ -124,8 +139,18 @@ def parse_args():
     parser.add_argument("--hidden-dim", type=int, default=256, help="Dimension of the hidden layers.")
     parser.add_argument("--rnn-hidden-dim", type=int, default=64, help="Dimension of the GRU hidden layers for trajectory encoding.")
 
-    parser.add_argument("--initial-cost-limit", type=float, default=2400.0, help="Initial (high) cost limit for annealing.")
-    parser.add_argument("--final-cost-limit", type=float, default=10.0, help="Final (target) cost limit after decay.")
+    parser.add_argument(
+        "--initial-cost-limit",
+        type=float,
+        default=None,
+        help="Initial cost limit. Defaults to the calibrated value for the selected scenario.",
+    )
+    parser.add_argument(
+        "--final-cost-limit",
+        type=float,
+        default=None,
+        help="Final training cost limit. Defaults to the calibrated value for the selected scenario.",
+    )
     parser.add_argument(
         "--cost-warmup-fraction",
         type=float,
@@ -159,16 +184,37 @@ def parse_args():
     return parser.parse_args()
 
 
-def apply_cost_schedule_config(model, args) -> None:
-    """Apply the approved three-stage cost schedule to a resumed model."""
+def resolve_cost_limits(args) -> None:
+    """Fill unspecified cost limits from scenario-specific calibration."""
+    default_initial, default_final = SCENARIO_COST_LIMIT_DEFAULTS.get(
+        args.scenario, FALLBACK_COST_LIMITS
+    )
+    if args.initial_cost_limit is None:
+        args.initial_cost_limit = default_initial
+    if args.final_cost_limit is None:
+        args.final_cost_limit = default_final
+    if args.initial_cost_limit <= 0 or args.final_cost_limit < 0:
+        raise ValueError("Cost limits must be non-negative and the initial limit positive.")
+    if args.final_cost_limit > args.initial_cost_limit:
+        raise ValueError("final_cost_limit must not exceed initial_cost_limit.")
+
+
+def apply_constrained_training_config(model, args) -> None:
+    """Apply CLI constraint and optimizer settings to a resumed model."""
     model.initial_cost_limit = args.initial_cost_limit
     model.final_cost_limit = args.final_cost_limit
     model.cost_warmup_fraction = args.cost_warmup_fraction
     model.cost_anneal_fraction = args.cost_anneal_fraction
+    model.lambda_lr = args.lambda_lr
+    model.cost_vf_coef = args.cost_vf_coef
+    model.batch_size = args.batch_size
+    model.n_epochs = args.n_epochs
+    model.target_kl = args.target_kl
     model._validate_cost_schedule()
 
 def main():
     args = parse_args()
+    resolve_cost_limits(args)
     set_seed(args.seed)
     
     run_name = f"{args.scenario}_{args.algo}_{time.strftime('%Y%m%d-%H%M%S')}"
@@ -192,6 +238,16 @@ def main():
         json.dump(training_config, config_file, ensure_ascii=False, indent=2)
 
     print(f"Scenario: {args.scenario}")
+    print(
+        "Cost schedule: "
+        f"{args.initial_cost_limit:g} -> {args.final_cost_limit:g} "
+        f"(warm-up {args.cost_warmup_fraction:.0%}, "
+        f"linear anneal {args.cost_anneal_fraction:.0%})"
+    )
+    print(
+        f"PPO updates: n_epochs={args.n_epochs}, batch_size={args.batch_size}, "
+        f"target_kl={args.target_kl:g}"
+    )
     print(f"TensorBoard logs: {tb_log_root_dir}")
     print(f"Model outputs: {model_save_dir}")
 
@@ -251,6 +307,7 @@ def main():
             n_steps=args.n_steps,
             batch_size=args.batch_size,
             n_epochs=args.n_epochs,
+            target_kl=args.target_kl,
             gamma=args.gamma,
             gae_lambda=args.gae_lambda,
             clip_range=args.clip_range,
@@ -261,7 +318,7 @@ def main():
         if args.resume_from:
             print(f"--- Resuming {args.algo.upper()} training from {args.resume_from} ---")
             model = PPOLagrangian.load(args.resume_from, env=env)
-            apply_cost_schedule_config(model, args)
+            apply_constrained_training_config(model, args)
             resume_run_name = f"{run_name}_resume"
             model.set_logger(configure(os.path.join(tb_log_root_dir, resume_run_name), ["stdout", "csv", "tensorboard"]))
         else:
@@ -282,6 +339,7 @@ def main():
                 n_steps=args.n_steps,
                 batch_size=args.batch_size,
                 n_epochs=args.n_epochs,
+                target_kl=args.target_kl,
                 gamma=args.gamma,
                 gae_lambda=args.gae_lambda,
                 clip_range=args.clip_range,
@@ -293,7 +351,7 @@ def main():
         if args.resume_from:
             # 加载模型，SB3会自动处理好自定义类的恢复
             model = SAGIPPO.load(args.resume_from, env=env)
-            apply_cost_schedule_config(model, args)
+            apply_constrained_training_config(model, args)
             # 修改这一行，与PPO保持一致的日志结构
             resume_run_name = f"{run_name}_resume"
             model.set_logger(configure(os.path.join(tb_log_root_dir, resume_run_name), ["stdout", "csv", "tensorboard"]))
@@ -315,6 +373,7 @@ def main():
                 n_steps=args.n_steps,
                 batch_size=args.batch_size,
                 n_epochs=args.n_epochs,
+                target_kl=args.target_kl,
                 gamma=args.gamma,
                 gae_lambda=args.gae_lambda,
                 clip_range=args.clip_range,

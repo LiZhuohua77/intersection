@@ -1,15 +1,8 @@
-# [关键修正] 从 typing 模块导入 Generator 和 Tuple
-from typing import Any, Dict, Optional, Type, Union, Generator, Tuple
+"""PPO-Lagrangian baseline sharing SAGI-PPO's constrained optimizer."""
 
-import numpy as np
-import torch
-from torch.nn import functional as F
-import torch as th
+from typing import Optional, Type, Union
 
-from stable_baselines3.common.utils import obs_as_tensor
-from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.policies import ActorCriticPolicy
-from stable_baselines3.common.vec_env import VecEnv, VecNormalize
 from stable_baselines3.common.type_aliases import GymEnv
 
 # 关键：从您现有的 SAGI-PPO 文件中导入基类
@@ -109,32 +102,9 @@ class PPOLagrangian(SAGIPPO):
         # (这就是 PPO-Lagrangian 和 SAGI-PPO 的唯一区别)
         self.rollout_buffer.advantages = (original_advantages - self.lambda_ * cost_advantages_flat) / (1 + self.lambda_)
 
-        # --- 6. [PPO-L] PPO 小批次更新循环 (与 SAGI-PPO 相同) ---
-        for rollout_data in self.rollout_buffer.get(self.batch_size):
-            # (以下代码从 SAGI-PPO.train() 复制而来, 确保更新逻辑一致)
-            reward_values, cost_values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, rollout_data.actions)
-            
-            # 'advantages' 此时是我们在步骤5中计算的拉格朗日优势
-            advantages = rollout_data.advantages 
-            if self.normalize_advantage:
-                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-            
-            ratio = torch.exp(log_prob - rollout_data.old_log_prob)
-            policy_loss = -torch.min(advantages * ratio, advantages * torch.clamp(ratio, 1 - clip_range, 1 + clip_range)).mean()
-            
-            value_loss = F.mse_loss(rollout_data.returns, reward_values.flatten())
-            cost_value_loss = F.mse_loss(rollout_data.cost_returns, cost_values.flatten())
-            
-            entropy_loss = -torch.mean(entropy) if entropy is not None else 0.0
-            
-            # (总损失与 SAGI-PPO 相同)
-            loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss + self.cost_vf_coef * cost_value_loss
-
-            self.policy.optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-            self.policy.optimizer.step()
-
-        self._n_updates += 1
-        # 恢复原始奖励优势 (与 SAGI-PPO 相同)
-        self.rollout_buffer.advantages = original_advantages
+        # --- 6. [PPO-L] Run the shared PPO optimizer for all configured epochs. ---
+        try:
+            self._optimize_policy(clip_range)
+        finally:
+            # Restore reward advantages for logging and any later buffer users.
+            self.rollout_buffer.advantages = original_advantages

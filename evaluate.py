@@ -387,7 +387,8 @@ def main():
         for ep in range(1, args.num_episodes + 1):
             reset_options = {
                 "scenario": args.scenario,
-                "algo": args.algo,
+                # Keep the reward definition identical across constrained methods.
+                # Safety cost is reported as a separate evaluation metric.
             }
             state, info = env.reset(
                 seed=args.seed + ep,

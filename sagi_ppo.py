@@ -13,7 +13,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.buffers import RolloutBuffer
 from stable_baselines3.common.callbacks import BaseCallback
-from stable_baselines3.common.utils import obs_as_tensor
+from stable_baselines3.common.utils import explained_variance, obs_as_tensor
 from stable_baselines3.common.torch_layers import create_mlp
 from stable_baselines3.common.vec_env import VecEnv, VecNormalize
 
@@ -322,6 +322,125 @@ class SAGIPPO(PPO):
         )
         return float(inner_product.item()), gradient_batch_size
 
+    def _optimize_policy(self, clip_range: float) -> None:
+        """Run PPO minibatch optimization for the configured number of epochs.
+
+        SAGI-PPO and PPO-Lagrangian both call this method so that their optimizer
+        behavior stays identical.  The previous implementation made only one
+        pass over the rollout buffer and silently ignored ``self.n_epochs``.
+        """
+        entropy_losses = []
+        policy_losses = []
+        value_losses = []
+        cost_value_losses = []
+        clip_fractions = []
+        approx_kl_divs = []
+        continue_training = True
+        epochs_completed = 0
+        final_loss = None
+
+        for epoch in range(self.n_epochs):
+            for rollout_data in self.rollout_buffer.get(self.batch_size):
+                actions = rollout_data.actions
+                if isinstance(self.action_space, spaces.Discrete):
+                    actions = actions.long().flatten()
+
+                reward_values, cost_values, log_prob, entropy = self.policy.evaluate_actions(
+                    rollout_data.observations, actions
+                )
+                advantages = rollout_data.advantages
+                if self.normalize_advantage and len(advantages) > 1:
+                    advantages = (advantages - advantages.mean()) / (
+                        advantages.std() + 1e-8
+                    )
+
+                ratio = torch.exp(log_prob - rollout_data.old_log_prob)
+                policy_loss = -torch.min(
+                    advantages * ratio,
+                    advantages * torch.clamp(
+                        ratio, 1 - clip_range, 1 + clip_range
+                    ),
+                ).mean()
+                value_loss = F.mse_loss(
+                    rollout_data.returns, reward_values.flatten()
+                )
+                cost_value_loss = F.mse_loss(
+                    rollout_data.cost_returns, cost_values.flatten()
+                )
+
+                if entropy is None:
+                    entropy_loss = -torch.mean(-log_prob)
+                else:
+                    entropy_loss = -torch.mean(entropy)
+
+                loss = (
+                    policy_loss
+                    + self.ent_coef * entropy_loss
+                    + self.vf_coef * value_loss
+                    + self.cost_vf_coef * cost_value_loss
+                )
+
+                with torch.no_grad():
+                    log_ratio = log_prob - rollout_data.old_log_prob
+                    approx_kl = torch.mean(
+                        (torch.exp(log_ratio) - 1) - log_ratio
+                    ).item()
+
+                policy_losses.append(policy_loss.item())
+                value_losses.append(value_loss.item())
+                cost_value_losses.append(cost_value_loss.item())
+                entropy_losses.append(entropy_loss.item())
+                clip_fractions.append(
+                    torch.mean((torch.abs(ratio - 1) > clip_range).float()).item()
+                )
+                approx_kl_divs.append(approx_kl)
+
+                if (
+                    self.target_kl is not None
+                    and approx_kl > 1.5 * self.target_kl
+                ):
+                    continue_training = False
+                    if self.verbose >= 1:
+                        print(
+                            f"Early stopping at epoch {epoch + 1} because "
+                            f"approx_kl={approx_kl:.4f} exceeded "
+                            f"1.5 * target_kl={1.5 * self.target_kl:.4f}."
+                        )
+                    break
+
+                self.policy.optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(
+                    self.policy.parameters(), self.max_grad_norm
+                )
+                self.policy.optimizer.step()
+                final_loss = loss.item()
+
+            self._n_updates += 1
+            epochs_completed += 1
+            if not continue_training:
+                break
+
+        self.logger.record("train/epochs_completed", epochs_completed)
+        self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
+        self.logger.record("train/clip_range", clip_range)
+        if policy_losses:
+            self.logger.record("train/policy_gradient_loss", np.mean(policy_losses))
+            self.logger.record("train/value_loss", np.mean(value_losses))
+            self.logger.record("train/cost_value_loss", np.mean(cost_value_losses))
+            self.logger.record("train/entropy_loss", np.mean(entropy_losses))
+            self.logger.record("train/clip_fraction", np.mean(clip_fractions))
+            self.logger.record("train/approx_kl", np.mean(approx_kl_divs))
+        if final_loss is not None:
+            self.logger.record("train/loss", final_loss)
+        self.logger.record(
+            "train/explained_variance",
+            explained_variance(
+                self.rollout_buffer.values.flatten(),
+                self.rollout_buffer.returns.flatten(),
+            ),
+        )
+
     def train(self) -> None:
         """
         [最终修正]
@@ -373,31 +492,11 @@ class SAGIPPO(PPO):
 
         self.lambda_ = max(0, self.lambda_ + self.lambda_lr * c)
 
-        # --- PPO 小批次更新循环 ---
-        # 再次调用 get() 时，由于 generator_ready=True，它会直接从已 flatten 的数据中创建小批次
-        for rollout_data in self.rollout_buffer.get(self.batch_size):
-            reward_values, cost_values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, rollout_data.actions)
-            advantages = rollout_data.advantages
-            if self.normalize_advantage:
-                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-            
-            ratio = torch.exp(log_prob - rollout_data.old_log_prob)
-            policy_loss = -torch.min(advantages * ratio, advantages * torch.clamp(ratio, 1 - clip_range, 1 + clip_range)).mean()
-            
-            value_loss = F.mse_loss(rollout_data.returns, reward_values.flatten())
-            cost_value_loss = F.mse_loss(rollout_data.cost_returns, cost_values.flatten())
-            
-            entropy_loss = -torch.mean(entropy) if entropy is not None else 0.0
-            loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss + self.cost_vf_coef * cost_value_loss
-
-            self.policy.optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-            self.policy.optimizer.step()
-
-        self._n_updates += 1
-        # 在训练结束后恢复原始的 advantages，以便日志记录等后续步骤使用
-        self.rollout_buffer.advantages = original_advantages
+        try:
+            self._optimize_policy(clip_range)
+        finally:
+            # Restore reward advantages for logging and any later buffer users.
+            self.rollout_buffer.advantages = original_advantages
     
     def collect_rollouts(self, env: VecEnv, callback: BaseCallback, rollout_buffer: SAGIRolloutBuffer, n_rollout_steps: int) -> bool:
         assert self._last_obs is not None
