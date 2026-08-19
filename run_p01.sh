@@ -15,6 +15,12 @@ export CUDA_VISIBLE_DEVICES=0
 export SDL_VIDEODRIVER=dummy
 export PYTHONUNBUFFERED=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# Each of the 30 environment workers should use one BLAS/OpenMP thread.
+# This also overrides invalid thread values occasionally injected by AutoDL.
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
 
 ALGOS=(
   sagi_ppo_mlp
