@@ -110,6 +110,29 @@ latest_pilot_model() {
   printf '%s\n' "$latest"
 }
 
+latest_gru_pilot_model() {
+  local algo="$1"
+  local pilot_dir="models/p0_3_gru_mask_pilot/seed_42/${SCENARIO}"
+  local candidates=()
+  local candidate
+  local latest=""
+
+  shopt -s nullglob
+  candidates=(
+    "$pilot_dir"/${SCENARIO}_${algo}_*/${algo}_final_model.zip
+  )
+  shopt -u nullglob
+
+  for candidate in "${candidates[@]}"; do
+    if [[ -z "$latest" || "$candidate" -nt "$latest" ]]; then
+      latest="$candidate"
+    fi
+  done
+
+  [[ -n "$latest" ]] || return 1
+  printf '%s\n' "$latest"
+}
+
 model_target_steps() {
   local model_path="$1"
   local config_path="${model_path%/*}/training_config.json"
@@ -139,6 +162,29 @@ case "$MODE" in
       run_one \
         "$algo" 42 "$GRU_PILOT_STEPS" 30 2048 10 512 \
         p0_3_gru_mask_pilot
+    done
+    ;;
+  extend-gru-pilot)
+    # Diagnostic continuation only: the original 6M curriculum reached the
+    # final budget earlier than a fresh 10M run, so these models are not final
+    # experiment results even after reaching 10M total timesteps.
+    for algo in sagi_ppo_gru ppo_lagrangian_gru; do
+      if ! gru_model="$(latest_gru_pilot_model "$algo")"; then
+        echo "未找到 ${algo} 的 GRU pilot 最终模型。"
+        echo "请确认已完成：bash run_p01.sh gru-pilot"
+        exit 1
+      fi
+
+      gru_steps="$(model_target_steps "$gru_model")"
+      if (( gru_steps >= TOTAL_STEPS )); then
+        echo "${algo} 的最新 pilot 已达到 ${gru_steps} 步，跳过。"
+        continue
+      fi
+
+      echo "将 ${algo} 从约 ${gru_steps} 步诊断性续训到 ${TOTAL_STEPS} 步。"
+      run_one \
+        "$algo" 42 "$TOTAL_STEPS" 30 2048 10 512 \
+        p0_3_gru_mask_pilot "$gru_model"
     done
     ;;
   pilot)
@@ -187,6 +233,7 @@ case "$MODE" in
     echo "  bash run_p01.sh smoke           # MLP 1024 步代码短测试"
     echo "  bash run_p01.sh gru-smoke       # 两个 GRU 各运行 1024 步"
     echo "  bash run_p01.sh gru-pilot       # 两个 GRU seed=42 各运行 600 万步"
+    echo "  bash run_p01.sh extend-gru-pilot # 两个 GRU 从 600 万诊断续训到 1000 万步"
     echo "  bash run_p01.sh pilot          # 从头跑 1000 万步 pilot"
     echo "  bash run_p01.sh extend-pilot   # 将已有 800 万步 pilot 续训到 1000 万步"
     echo "  bash run_p01.sh train          # pilot 合格后训练剩余 19 个模型"
