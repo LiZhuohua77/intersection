@@ -118,6 +118,9 @@ class HybridFeaturesExtractor(BaseFeaturesExtractor):
         self.hv_obs_dim = hv_obs_dim
         self.traj_len = traj_len
         self.traj_feat_dim = traj_feat_dim
+        self.base_obs_dim = av_obs_dim + hv_obs_dim
+        self.traj_flat_dim = traj_len * traj_feat_dim
+        self.expected_obs_dim = self.base_obs_dim + (2 * self.traj_flat_dim)
         
         # 定义轨迹编码器
         self.yield_traj_encoder = nn.GRU(input_size=traj_feat_dim, hidden_size=rnn_hidden_dim, batch_first=True)
@@ -142,6 +145,12 @@ class HybridFeaturesExtractor(BaseFeaturesExtractor):
                 - yield_traj (torch.Tensor): 重塑后的让行轨迹序列。
                 - go_traj (torch.Tensor): 重塑后的通行轨迹序列。
         """
+        if observation.ndim != 2 or observation.shape[1] != self.expected_obs_dim:
+            raise ValueError(
+                "HybridFeaturesExtractor expected observations with shape "
+                f"(batch, {self.expected_obs_dim}), got {tuple(observation.shape)}."
+            )
+
         current_idx = 0
         
         av_obs = observation[:, current_idx : current_idx + self.av_obs_dim]
@@ -150,18 +159,40 @@ class HybridFeaturesExtractor(BaseFeaturesExtractor):
         hv_obs = observation[:, current_idx : current_idx + self.hv_obs_dim]
         current_idx += self.hv_obs_dim
         
-        traj_flat_len = self.traj_len * self.traj_feat_dim
+        yield_traj_flat = observation[:, current_idx : current_idx + self.traj_flat_dim]
+        current_idx += self.traj_flat_dim
         
-        yield_traj_flat = observation[:, current_idx : current_idx + traj_flat_len]
-        current_idx += traj_flat_len
-        
-        go_traj_flat = observation[:, current_idx : current_idx + traj_flat_len]
+        go_traj_flat = observation[:, current_idx : current_idx + self.traj_flat_dim]
         
         # 将扁平的轨迹数据重塑为 (batch_size, sequence_length, feature_dim)
         yield_traj = yield_traj_flat.view(-1, self.traj_len, self.traj_feat_dim)
         go_traj = go_traj_flat.view(-1, self.traj_len, self.traj_feat_dim)
         
         return av_obs, hv_obs, yield_traj, go_traj
+
+    @staticmethod
+    def _trajectory_presence_mask(trajectory: torch.Tensor) -> torch.Tensor:
+        """Return one for real trajectories and zero for all-zero padding.
+
+        The environment represents a missing conflicting vehicle with an
+        entirely zero trajectory.  Passing that padding through a trainable GRU
+        lets its biases create a changing, information-free embedding and can
+        destabilize PPO updates.  Multiplying by this mask keeps missing
+        trajectories exactly zero and blocks their gradients into the encoder.
+        """
+        return trajectory.detach().abs().amax(dim=(1, 2)).gt(0).to(
+            dtype=trajectory.dtype
+        ).unsqueeze(1)
+
+    @staticmethod
+    def _encode_trajectory(
+        encoder: nn.GRU, trajectory: torch.Tensor
+    ) -> torch.Tensor:
+        _, hidden = encoder(trajectory)
+        embedding = hidden[-1]
+        return embedding * HybridFeaturesExtractor._trajectory_presence_mask(
+            trajectory
+        )
 
     def forward(self, observations: torch.Tensor) -> torch.Tensor:
         """从混合观测中提取并组合特征。
@@ -181,11 +212,10 @@ class HybridFeaturesExtractor(BaseFeaturesExtractor):
         av_obs, hv_obs, yield_traj, go_traj = self._split_observation(observations)
         
         # 2. 编码轨迹
-        _, yield_embedding = self.yield_traj_encoder(yield_traj)
-        _, go_embedding = self.go_traj_encoder(go_traj)
-        
-        yield_embedding = yield_embedding.squeeze(0)
-        go_embedding = go_embedding.squeeze(0)
+        yield_embedding = self._encode_trajectory(
+            self.yield_traj_encoder, yield_traj
+        )
+        go_embedding = self._encode_trajectory(self.go_traj_encoder, go_traj)
         
         # 3. 拼接成最终的特征向量
         combined_features = torch.cat([av_obs, hv_obs, yield_embedding, go_embedding], dim=1)

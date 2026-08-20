@@ -10,6 +10,7 @@ cd "$SCRIPT_DIR"
 
 SCENARIO="agent_only_simple"
 TOTAL_STEPS=10000000
+GRU_PILOT_STEPS=6000000
 
 export CUDA_VISIBLE_DEVICES=0
 export SDL_VIDEODRIVER=dummy
@@ -124,6 +125,22 @@ case "$MODE" in
     # Verifies the complete collection/update/save path. It is not a result run.
     run_one sagi_ppo_mlp 42 1024 1 1024 2 512 constraint_fix_smoke
     ;;
+  gru-smoke)
+    # Exercises both constrained GRU code paths after feature-extractor changes.
+    for algo in sagi_ppo_gru ppo_lagrangian_gru; do
+      run_one "$algo" 42 1024 1 1024 2 512 p0_3_gru_mask_smoke
+    done
+    ;;
+  gru-pilot)
+    # Seed 42 exposed failures in both GRU variants in the 10M experiment.
+    # Six million steps still preserve the same 10%/40%/50% schedule and give
+    # three million steps at the fixed final budget before a full retrain.
+    for algo in sagi_ppo_gru ppo_lagrangian_gru; do
+      run_one \
+        "$algo" 42 "$GRU_PILOT_STEPS" 30 2048 10 512 \
+        p0_3_gru_mask_pilot
+    done
+    ;;
   pilot)
     # Fresh 10M-step pilot. Existing 8M pilots should use extend-pilot instead.
     run_one sagi_ppo_mlp 42 "$TOTAL_STEPS" 30 2048 10 512 p0_2_constraint_fix
@@ -167,7 +184,9 @@ case "$MODE" in
     ;;
   *)
     echo "使用方法："
-    echo "  bash run_p01.sh smoke  # 1024 步代码短测试"
+    echo "  bash run_p01.sh smoke           # MLP 1024 步代码短测试"
+    echo "  bash run_p01.sh gru-smoke       # 两个 GRU 各运行 1024 步"
+    echo "  bash run_p01.sh gru-pilot       # 两个 GRU seed=42 各运行 600 万步"
     echo "  bash run_p01.sh pilot          # 从头跑 1000 万步 pilot"
     echo "  bash run_p01.sh extend-pilot   # 将已有 800 万步 pilot 续训到 1000 万步"
     echo "  bash run_p01.sh train          # pilot 合格后训练剩余 19 个模型"
